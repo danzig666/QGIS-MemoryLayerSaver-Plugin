@@ -6,6 +6,7 @@ from PyQt5.QtCore import *
 from PyQt5.QtXml import *
 from qgis.core import *
 import sys
+import time
 
 
 try:
@@ -31,8 +32,16 @@ class Writer( QObject ):
 
     def open( self ):
         self._file = QFile(self._filename)
-        if not self._file.open(QIODevice.WriteOnly):
+        
+        opened = False # Wait for file to become available (eg. network share)
+        for i in range(10): 
+            if self._file.open(QIODevice.WriteOnly):
+                opened = True
+                break
+            time.sleep(5)
+        if not opened:
             raise ValueError("Cannot open "+self._filename)
+            
         self._dstream = QDataStream( self._file )
         self._dstream.setVersion(QDataStream.Qt_4_5)
         for c in b"QGis.MemoryLayerData":

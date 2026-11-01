@@ -1,0 +1,22 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: QGIS ${{ matrix.qgis }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The minimum supported version, then the latest long-term and stable releases
+        qgis: ["3.40", "3.44", "4.2"]
+    container: qgis/qgis:${{ matrix.qgis }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the regression tests
+        run: python3 tests/test_regressions.py . "$RUNNER_TEMP/work"

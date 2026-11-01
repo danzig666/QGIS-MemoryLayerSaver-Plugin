@@ -1,7 +1,7 @@
 [general]
 name=Memory Layer Saver (Danzig fork)
 description=Makes memory layers persistent. Fork of Memory Layer Saver by Chris Crook and Yoann Quenach de Quivillic.
-about=This is a fork of Memory Layer Saver (https://github.com/YoannQDQ/qgis-memory-layer-saver), by Chris Crook and Yoann Quenach de Quivillic. Please report problems with this version to the fork, not to the original authors.
+about=This is a fork of Memory Layer Saver, which can be installed next to the original but only one should be enabled (original: https://github.com/YoannQDQ/qgis-memory-layer-saver), by Chris Crook and Yoann Quenach de Quivillic. Please report problems with this version to the fork, not to the original authors.
  Makes memory layers persistent so that they are restored when a project is closed and reopened.
  The memory provider data is streamed in a portable binary format (QDataStream) and embedded
  in the project attachments (inside the qgz archive, or in attachments.zip for unzipped projects).
@@ -26,5 +26,5 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 
 # versioning
-version=6.1.1
+version=6.2.0
 changelog=

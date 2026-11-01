@@ -2,14 +2,15 @@ import configparser
 import tempfile
 from pathlib import Path
 
-from qgis.core import Qgis, QgsApplication, QgsProject
+from qgis import utils as qgis_utils
+from qgis.core import Qgis, QgsApplication, QgsProject, QgsSettings
 from qgis.PyQt.QtCore import QFile, QFileInfo
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QPushButton, QStyle, QWidget
 from qgis.utils import iface
 
-from MemoryLayerSaver.layer_connector import LayerConnector
-from MemoryLayerSaver.layer_tools import (
+from .layer_connector import LayerConnector
+from .layer_tools import (
     RestoreDialog,
     convert_to_memory_layer,
     export_to_geopackage,
@@ -19,15 +20,17 @@ from MemoryLayerSaver.layer_tools import (
     switch_to_geopackage,
     temporary_file_layers,
 )
-from MemoryLayerSaver.mldata import FORMAT_V2, FORMAT_V3, MldataError, needs_v3
-from MemoryLayerSaver.reader import Reader
-from MemoryLayerSaver.settings import FORMAT_ALWAYS_V2, FORMAT_ALWAYS_V3, SKIP_MEMORY_LAYERS_CHECK_KEY, Settings
-from MemoryLayerSaver.settings_dialog import SettingsDialog
-from MemoryLayerSaver.toolbox import Progress, log, log_error, log_warning, unfiltered_provider
-from MemoryLayerSaver.writer import Writer
+from .mldata import FORMAT_V2, FORMAT_V3, MldataError, needs_v3
+from .reader import Reader
+from .settings import FORMAT_ALWAYS_V2, FORMAT_ALWAYS_V3, SKIP_MEMORY_LAYERS_CHECK_KEY, Settings
+from .settings_dialog import SettingsDialog
+from .toolbox import Progress, log, log_error, log_warning, unfiltered_provider
+from .writer import Writer
 
 DIR_PLUGIN_ROOT: Path = Path(__file__).parent
 
+# The plugin this one was forked from, which works on the same data
+ORIGINAL_PLUGIN_ID = "MemoryLayerSaver"
 MLDATA_NAME = "layers.mldata"
 BACKUP_SUFFIX = ".bak"
 # Keeps what could not be loaded out of the way of the regular backups
@@ -48,6 +51,7 @@ class MemoryLayerSaver(LayerConnector):
         self._moved_layer_ids = set()
         self._has_orphaned_data = False
         self._warned_temporary_layers = set()
+        self._warned_original_plugin = False
         super().__init__()
         proj = QgsProject.instance()
         self.has_modified_layers = proj.isDirty()
@@ -91,6 +95,7 @@ class MemoryLayerSaver(LayerConnector):
         self.settings_action.triggered.connect(self.show_settings)
 
         Settings.restore_ask_to_save_memory_layers()
+        self.stand_aside_for_original_plugin()
         log("MemoryLayerSaver loaded")
 
     def tr(self, message, *args, **kwargs):
@@ -159,6 +164,8 @@ class MemoryLayerSaver(LayerConnector):
 
     def load_data(self):
         """Load the memory layers from the .mldata file"""
+        if self.stand_aside_for_original_plugin():
+            return
         self.load_failed = False
         filepath = self.memory_layer_file()
         layers = list(self.memory_layers())
@@ -202,7 +209,7 @@ class MemoryLayerSaver(LayerConnector):
 
     def save_data(self):
         """Write the layers to the .mldata file"""
-        if self._busy:
+        if self._busy or self.stand_aside_for_original_plugin():
             return
 
         layers = list(self.memory_layers())
@@ -264,6 +271,38 @@ class MemoryLayerSaver(LayerConnector):
 
         self.load_failed = False
         self.set_stored_state(layers)
+
+    def stand_aside_for_original_plugin(self):
+        """Both plugins work on the same data, and would overwrite the work of each other: while the
+        original plugin is active, it is left in charge. The data stays readable by both."""
+        if ORIGINAL_PLUGIN_ID not in qgis_utils.active_plugins:
+            return False
+        log_warning("The original Memory Layer Saver plugin is active: this fork does nothing")
+        if not self._warned_original_plugin:
+            self._warned_original_plugin = True
+            widget = iface.messageBar().createMessage(
+                self.tr("Memory Layer Saver"),
+                self.tr(
+                    "The original Memory Layer Saver plugin is also active. "
+                    "Until it is disabled, this fork does nothing and its fixes do not apply."
+                ),
+            )
+            button = QPushButton(self.tr("Disable the original plugin"), widget)
+            button.clicked.connect(self.disable_original_plugin)
+            widget.layout().addWidget(button)
+            iface.messageBar().pushWidget(widget, Qgis.MessageLevel.Warning, 0)
+        return True
+
+    def disable_original_plugin(self):
+        """Take over from the original plugin, keeping what happened in the project until then"""
+        qgis_utils.unloadPlugin(ORIGINAL_PLUGIN_ID)
+        QgsSettings().setValue(f"PythonPlugins/{ORIGINAL_PLUGIN_ID}", False)
+        iface.messageBar().clearWidgets()
+        self._warned_original_plugin = False
+        modified = self.has_modified_layers
+        # Layers which are already loaded are left as they are
+        self.load_data()
+        self.has_modified_layers = self.has_modified_layers or modified
 
     @staticmethod
     def total_features(layer):

@@ -1,6 +1,6 @@
 """Regression tests, to run with the Python of a QGIS installation (no display needed):
 
-    python-qgis tests/test_regressions.py <dir containing MemoryLayerSaver> <work dir>
+    python-qgis tests/test_regressions.py <dir containing MemoryLayerSaverDanzig> <work dir>
 """
 
 import os
@@ -109,13 +109,13 @@ for kind in ("information", "warning", "critical", "about", "question"):
 slot_errors = []
 sys.excepthook = lambda t, v, tb: slot_errors.append(f"{t.__name__}: {v}")
 
-from MemoryLayerSaver import layer_tools  # noqa: E402
-from MemoryLayerSaver.memory_layer_saver import MemoryLayerSaver  # noqa: E402
-from MemoryLayerSaver.mldata import FORMAT_V2, FORMAT_V3, MldataError  # noqa: E402
-from MemoryLayerSaver.reader import Reader  # noqa: E402
-from MemoryLayerSaver.settings import FORMAT_ALWAYS_V2, FORMAT_ALWAYS_V3, FORMAT_AUTO, Settings  # noqa: E402
-from MemoryLayerSaver.settings_dialog import SettingsDialog  # noqa: E402
-from MemoryLayerSaver.writer import Writer  # noqa: E402
+from MemoryLayerSaverDanzig import layer_tools  # noqa: E402
+from MemoryLayerSaverDanzig.memory_layer_saver import MemoryLayerSaver  # noqa: E402
+from MemoryLayerSaverDanzig.mldata import FORMAT_V2, FORMAT_V3, MldataError  # noqa: E402
+from MemoryLayerSaverDanzig.reader import Reader  # noqa: E402
+from MemoryLayerSaverDanzig.settings import FORMAT_ALWAYS_V2, FORMAT_ALWAYS_V3, FORMAT_AUTO, Settings  # noqa: E402
+from MemoryLayerSaverDanzig.settings_dialog import SettingsDialog  # noqa: E402
+from MemoryLayerSaverDanzig.writer import Writer  # noqa: E402
 
 proj = QgsProject.instance()
 plugin = MemoryLayerSaver()
@@ -696,7 +696,7 @@ def bug9_settings_dialog():
         received.append(parent)
         original(self, parent)
 
-    import MemoryLayerSaver.memory_layer_saver as module
+    import MemoryLayerSaverDanzig.memory_layer_saver as module
 
     exec_original = SettingsDialog.exec
     SettingsDialog.__init__ = spy
@@ -995,6 +995,68 @@ def turning_backups_off_removes_the_existing_one():
     assert scan_bytes(entry_bytes(path))[1] == {"A": 4}
     reopen(path)
     assert counts() == {"A": 4}
+
+
+@test
+def original_plugin_active_means_this_one_stands_aside():
+    from qgis import utils as qgis_utils
+
+    path = new_project("t")
+    layer("A", 3)
+    proj.write(path)
+    good = entry_bytes(path)
+    plugin_id = "MemoryLayerSaver"
+
+    shown = []
+    original_create = iface.bar.createMessage
+
+    def spy(title, text):
+        shown.append(text)
+        return original_create(title, text)
+
+    iface.bar.createMessage = spy
+    qgis_utils.active_plugins.append(plugin_id)
+    unload = qgis_utils.unloadPlugin
+    unloaded = []
+
+    def fake_unload(name):
+        unloaded.append(name)
+        qgis_utils.active_plugins.remove(name)
+        return True
+
+    qgis_utils.unloadPlugin = fake_unload
+    try:
+        # Neither loading nor saving, and a single warning
+        reopen(path)
+        assert get("A").featureCount() == 0
+        edit_add_feature(get("A"))
+        proj.write(path)
+        assert entry_bytes(path) == good
+        proj.write(path)
+        assert len([t for t in shown if "original" in t]) == 1, shown
+
+        # Disabling it through the button takes over, without losing the pending change
+        plugin.disable_original_plugin()
+        assert unloaded == [plugin_id]
+        assert QgsSettings().value(f"PythonPlugins/{plugin_id}", None, bool) is False
+    finally:
+        qgis_utils.unloadPlugin = unload
+        if plugin_id in qgis_utils.active_plugins:
+            qgis_utils.active_plugins.remove(plugin_id)
+        del iface.bar.createMessage
+    assert get("A").featureCount() == 1, "the layer already holds a feature: left as it is"
+    assert plugin.has_modified_layers
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"A": 1}
+    assert not plugin.load_failed
+
+
+@test
+def plugin_id_is_not_the_one_of_the_original():
+    assert Path(__file__).exists()
+    package = sys.modules[MemoryLayerSaver.__module__].__package__
+    assert package == "MemoryLayerSaverDanzig", package
+    assert not [m for m in sys.modules if m == "MemoryLayerSaver" or m.startswith("MemoryLayerSaver.")]
 
 
 @test

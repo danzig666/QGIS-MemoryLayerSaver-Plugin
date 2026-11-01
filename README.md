@@ -5,6 +5,14 @@ Please report problems with this version [here](https://github.com/danzig666/QGI
 
 [![Tests](https://github.com/danzig666/QGIS-MemoryLayerSaver-Plugin/actions/workflows/tests.yml/badge.svg)](https://github.com/danzig666/QGIS-MemoryLayerSaver-Plugin/actions/workflows/tests.yml)
 
+## Installing
+
+The plugin ID is `MemoryLayerSaverDanzig`, so QGIS lists it separately from the original `MemoryLayerSaver`. Projects
+saved with either plugin can be opened with the other, unless they use the v3 format, which only this fork reads.
+
+Only enable one of them, as both work on the same data. While the original plugin is active, this fork does nothing and
+offers to disable it. If you installed version 6.1.1 or earlier of this fork, uninstall it first.
+
 ## What this fork changes
 
 Compared to the original 6.0.1. Issue numbers refer to the [original project's tracker](https://github.com/YoannQDQ/qgis-memory-layer-saver/issues).
@@ -97,9 +105,9 @@ changes after reopening the project.
 
 ## Packaging
 
-Zip the contents of the MemoryLayerSaver directory to create the plugin, i.e.
+Zip the contents of the MemoryLayerSaverDanzig directory to create the plugin, i.e.
 
-    zip -r MemoryLayerSaver MemoryLayerSaver
+    zip -r MemoryLayerSaverDanzig MemoryLayerSaverDanzig
 
 ## Tests
 

@@ -3,6 +3,12 @@
 This is the changelog of a fork of [Memory Layer Saver](https://github.com/YoannQDQ/qgis-memory-layer-saver). Versions up to 6.0.1 are the original project,
 and all issue numbers below refer to its issue tracker.
 
+## [6.2.0] - 2026-11-01
+- New plugin ID, `MemoryLayerSaverDanzig`. The plugin had the same ID as the original one, so QGIS merged the two
+  into a single entry when plugin repositories offered both. Existing projects and settings keep working. To upgrade
+  from an earlier version of this fork, uninstall it first
+- While the original plugin is active, this fork does nothing and offers to disable it, as both work on the same data
+
 ## [6.1.1] - 2026-11-01
 - Make clear this is a fork: name, description, authors, About dialog and README
 - All links now point to the fork

@@ -631,13 +631,15 @@ class MemoryLayerSaver(LayerConnector):
         repository = cfg.get("general", "repository")
         tracker = cfg.get("general", "tracker")
         homepage = cfg.get("general", "homepage")
+        forked_from = cfg.get("general", "forkedFrom")
         QMessageBox.about(
             bogus,
             self.tr("About {0}").format(name),
             "<b>Version</b> {}<br><br>"
             "<b>{}</b> : <a href={}>GitHub</a><br>"
             "<b>{}</b> : <a href={}>GitHub</a><br>"
-            "<b>{}</b> : <a href={}>GitHub</a>".format(
+            "<b>{}</b> : <a href={}>GitHub</a><br><br>"
+            "{} <a href={}>Memory Layer Saver</a>".format(
                 version,
                 self.tr("Source code"),
                 repository,
@@ -645,6 +647,8 @@ class MemoryLayerSaver(LayerConnector):
                 tracker,
                 self.tr("Documentation"),
                 homepage,
+                self.tr("This is a fork of"),
+                forked_from,
             ),
         )
         bogus.deleteLater()

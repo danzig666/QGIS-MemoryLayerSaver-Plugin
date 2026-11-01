@@ -1,7 +1,8 @@
 [general]
-name=Memory Layer Saver
-description=Makes memory layers persistent
-about=Makes memory layers persistent so that they are restored when a project is closed and reopened.
+name=Memory Layer Saver (Danzig fork)
+description=Makes memory layers persistent. Fork of Memory Layer Saver by Chris Crook and Yoann Quenach de Quivillic.
+about=This is a fork of Memory Layer Saver (https://github.com/YoannQDQ/qgis-memory-layer-saver), by Chris Crook and Yoann Quenach de Quivillic. Please report problems with this version to the fork, not to the original authors.
+ Makes memory layers persistent so that they are restored when a project is closed and reopened.
  The memory provider data is streamed in a portable binary format (QDataStream) and embedded
  in the project attachments (inside the qgz archive, or in attachments.zip for unzipped projects).
 category=Vector
@@ -10,11 +11,12 @@ icon=icon.svg
 tags=memory,scratch,persistent
 
 # credits and contact
-author=Chris Crook, Yoann Quenach de Quivillic
-email=ccrook@linz.govt.nz, yoann.quenach@gmail.com
-homepage=http://github.com/YoannQDQ/qgis-memory-layer-saver
-tracker=http://github.com/YoannQDQ/qgis-memory-layer-saver/issues
-repository=http://github.com/YoannQDQ/qgis-memory-layer-saver
+author=Danzig (fork of the work of Chris Crook and Yoann Quenach de Quivillic)
+email=danzig666@users.noreply.github.com
+homepage=https://github.com/danzig666/QGIS-MemoryLayerSaver-Plugin
+tracker=https://github.com/danzig666/QGIS-MemoryLayerSaver-Plugin/issues
+repository=https://github.com/danzig666/QGIS-MemoryLayerSaver-Plugin
+forkedFrom=https://github.com/YoannQDQ/qgis-memory-layer-saver
 
 # experimental flag
 deprecated=False
@@ -24,5 +26,5 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 
 # versioning
-version=6.1.0
+version=6.1.1
 changelog=

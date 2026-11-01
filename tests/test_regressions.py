@@ -508,6 +508,8 @@ def bug9_about_link():
     plugin.show_about()
     text = next(t for k, t in dialogs if k == "about")
     assert "/issues/issues" not in text and "/issues>" in text, text
+    assert text.count("danzig666/QGIS-MemoryLayerSaver-Plugin") == 3, text
+    assert "fork of" in text and text.count("YoannQDQ/qgis-memory-layer-saver") == 1, text
 
 
 @test

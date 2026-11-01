@@ -1,5 +1,12 @@
 # CHANGELOG
 
+This is the changelog of a fork of [Memory Layer Saver](https://github.com/YoannQDQ/qgis-memory-layer-saver). Versions up to 6.0.1 are the original project,
+and all issue numbers below refer to its issue tracker.
+
+## [6.1.1] - 2026-11-01
+- Make clear this is a fork: name, description, authors, About dialog and README
+- All links now point to the fork
+
 ## [6.1.0] - 2026-11-01
 ### Data safety
 - Writing is atomic: a failed save leaves the previous file untouched, and is reported

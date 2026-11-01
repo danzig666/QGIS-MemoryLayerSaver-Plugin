@@ -1,4 +1,7 @@
-# Memory Layer Saver
+# Memory Layer Saver (Danzig fork)
+
+This is a fork of [Memory Layer Saver](https://github.com/YoannQDQ/qgis-memory-layer-saver) by Chris Crook and Yoann Quenach de Quivillic.
+Please report problems with this version [here](https://github.com/danzig666/QGIS-MemoryLayerSaver-Plugin/issues), not to the original authors.
 
 QGIS plugin that makes data in memory provider vector layers persistent, so that they are restored
 when a project is closed and reopened.

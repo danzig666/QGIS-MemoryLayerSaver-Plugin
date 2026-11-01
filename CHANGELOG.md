@@ -33,7 +33,9 @@
 ### Fixes
 - Fix the 'Report issues' link in the about dialog
 - Unloading the plugin no longer leaves the instance connected to the project, nor the menu behind
-- Projects without memory layers no longer get an empty attachment, and removed layers no longer stay in the file
+- Projects without memory layers no longer get an empty attachment
+- The project shrinks when layers leave it: data of layers made permanent is gone on the next save, data of deleted
+  layers stays in the backup until the next rewrite, and what older versions left behind is cleaned up on save
 - The settings dialog has a parent and a title, and its typo is fixed
 
 ## [6.0.1] - 2026-03-03

@@ -10,7 +10,9 @@ The data is stored in a `layers.mldata` file:
 - by default embedded in the project: inside the `.qgz` archive, or in `<project>_attachments.zip` for a `.qgs` project;
 - with "Embed mldata file" turned off in the settings, in a `<project file>.mldata` file beside the project file.
 
-The previous content is kept in a `.bak` file in the same place, unless turned off in the settings.
+The previous content is kept in a `.bak` file in the same place, unless turned off in the settings. Nothing is kept for
+layers made permanent, as their data is safe in their new file. Once no memory layer is left, these files are removed
+from the project: at once if the layers were made permanent, on the save after that if they were deleted.
 
 ## What is saved
 

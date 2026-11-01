@@ -526,9 +526,150 @@ def bug9_removed_layers_leave_the_file():
     proj.write(path)
     proj.removeMapLayer(a.id())
     proj.write(path)
-    assert scan_bytes(entry_bytes(path))[1] == {}
+    # Deleted layers stay available in the backup for one save, then nothing is left
+    assert entry_bytes(path) is None
     assert scan_bytes(entry_bytes(path, ".bak"))[1] == {"A": 20}
     assert not any(k == "warning" for k, _ in dialogs), dialogs
+    proj.write(path)
+    assert not [e for e in entries(path) if "mldata" in e], entries(path)
+
+
+def make_permanent(lyr):
+    """What the Make Permanent action of QGIS does: write a file, then change the data source"""
+    target = str(Path(tempfile.mkdtemp(dir=WORK)) / "moved.gpkg")
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "GPKG"
+    assert QgsVectorFileWriter.writeAsVectorFormatV3(lyr, target, proj.transformContext(), options)[0] == 0
+    lyr.setDataSource(target, lyr.name(), "ogr")
+    assert lyr.dataProvider().name() == "ogr"
+
+
+@test
+def moved_layers_leave_no_data_in_the_project():
+    path = new_project("t")
+    a, b = layer("A", 5000), layer("B", 5000)
+    proj.write(path)
+    size = os.path.getsize(path)
+    make_permanent(a)
+    make_permanent(b)
+    proj.write(path)
+    assert not [e for e in entries(path) if "mldata" in e], entries(path)
+    assert os.path.getsize(path) < size / 2, (os.path.getsize(path), size)
+    reopen(path)
+    assert get("A").featureCount() == 5000 and not plugin.load_failed
+    assert not dialogs, dialogs
+
+
+@test
+def partly_moved_layers_leave_only_the_others():
+    path = new_project("t")
+    a, b = layer("A", 5000), layer("B", 5000)
+    proj.write(path)
+    edit_add_feature(b)
+    proj.write(path)
+    assert entry_bytes(path, ".bak") is not None
+    size = os.path.getsize(path)
+    make_permanent(a)
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"B": 5001}
+    assert entry_bytes(path, ".bak") is None
+    assert os.path.getsize(path) < size / 2, (os.path.getsize(path), size)
+    reopen(path)
+    assert get("B").featureCount() == 5001
+    # Backups come back with the next change
+    edit_add_feature(get("B"))
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path, ".bak"))[1] == {"B": 5001}
+
+
+@test
+def moved_and_deleted_layers_keep_the_backup_of_the_deleted_one():
+    path = new_project("t")
+    a, b, c = layer("A", 5), layer("B", 5), layer("C", 5)
+    proj.write(path)
+    make_permanent(a)
+    proj.removeMapLayer(b.id())
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"C": 5}
+    assert scan_bytes(entry_bytes(path, ".bak"))[1] == {"A": 5, "B": 5, "C": 5}
+
+
+def save_without_plugin(path):
+    proj.writeProject.disconnect(plugin.save_data)
+    try:
+        assert proj.write(path)
+    finally:
+        proj.writeProject.connect(plugin.save_data)
+
+
+@test
+def stale_data_of_older_versions_is_cleaned_up():
+    # What upstream leaves in a project whose last memory layer is gone
+    path = new_project("t")
+    a = layer("A", 20)
+    proj.write(path)
+    make_permanent(a)
+    save_without_plugin(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"A": 20}
+    reopen(path)
+    assert not plugin.load_failed and not dialogs, dialogs
+    proj.write(path)
+    assert entry_bytes(path) is None
+    assert scan_bytes(entry_bytes(path, ".bak"))[1] == {"A": 20}
+    proj.write(path)
+    assert not [e for e in entries(path) if "mldata" in e], entries(path)
+
+    # With another layer remaining
+    path = new_project("t2")
+    a, b = layer("A", 20), layer("B", 3)
+    proj.write(path)
+    make_permanent(a)
+    save_without_plugin(path)
+    reopen(path)
+    assert get("B").featureCount() == 3
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"B": 3}
+
+
+@test
+def nothing_left_with_legacy_storage_and_without_backups():
+    Settings.set_mldata_embedded(False)
+    path = new_project("t")
+    a = layer("A", 5)
+    proj.write(path)
+    assert Path(path + ".mldata").exists()
+    make_permanent(a)
+    proj.write(path)
+    assert not Path(path + ".mldata").exists() and not Path(path + ".mldata.bak").exists()
+
+    Settings.set_mldata_embedded(True)
+    Settings.set_keep_backup(False)
+    path = new_project("t2")
+    a = layer("A", 5)
+    proj.write(path)
+    proj.removeMapLayer(a.id())
+    proj.write(path)
+    assert not [e for e in entries(path) if "mldata" in e], entries(path)
+
+
+@test
+def discarding_data_still_asks_after_a_failed_load():
+    path = new_project("t")
+    a = layer("A", 50)
+    proj.write(path)
+    good = entry_bytes(path)
+    replace_mldata(path, lambda d: d[: len(d) // 2])
+    reopen(path)
+    assert plugin.load_failed
+    damaged = entry_bytes(path)
+    make_permanent(get("A"))
+    proj.write(path)
+    assert entry_bytes(path) == damaged, "kept when answering No"
+    answer["value"] = QMessageBox.StandardButton.Yes
+    proj.write(path)
+    assert entry_bytes(path) is None
+    assert entry_bytes(path, "layers.mldata.failed-load.bak") == damaged
+    assert good != damaged
 
 
 @test
@@ -802,6 +943,18 @@ def backup_is_kept_inside_the_project():
     edit_add_feature(get("A"))
     proj.write(path)
     assert entry_bytes(path, ".bak") is None
+
+
+@test
+def layers_written_with_the_settings_on_removal():
+    # An intended removal of one layer among others does not ask
+    path = new_project("t")
+    a, _b = layer("A", 3), layer("B", 3)
+    proj.write(path)
+    proj.removeMapLayer(a.id())
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"B": 3}
+    assert not dialogs, dialogs
 
 
 @test

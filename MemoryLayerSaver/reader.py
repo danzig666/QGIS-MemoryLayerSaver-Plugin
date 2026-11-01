@@ -33,6 +33,7 @@ class Reader:
         self._layer_end = None
         self.plugin_version = ""
         self.layer_count = None
+        self.layer_ids = []
         self.errors = []
 
     def __enter__(self):
@@ -80,6 +81,9 @@ class Reader:
     @property
     def version(self):
         return self._version
+
+    def has_layers(self):
+        return not self._dstream.atEnd()
 
     def check_status(self, where):
         if self._dstream.status() != QDataStream.Status.Ok:
@@ -150,6 +154,7 @@ class Reader:
                     self._layer_end = self._file.pos() + size
                 self.check_status("layer header")
                 seen += 1
+                self.layer_ids.append(layer_id)
                 handler(layer_id)
                 self.check_status(f"layer {layer_id}")
             except (MldataError, TypeError, ValueError, OverflowError) as e:

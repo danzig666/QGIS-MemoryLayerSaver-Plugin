@@ -45,6 +45,8 @@ class MemoryLayerSaver(LayerConnector):
         self._busy = False
         self._fingerprints = {}
         self._stored_legacy_mode = None
+        self._moved_layer_ids = set()
+        self._has_orphaned_data = False
         self._warned_temporary_layers = set()
         super().__init__()
         proj = QgsProject.instance()
@@ -111,6 +113,8 @@ class MemoryLayerSaver(LayerConnector):
         self.load_failed = False
         self._fingerprints = {}
         self._stored_legacy_mode = None
+        self._moved_layer_ids = set()
+        self._has_orphaned_data = False
         self._warned_temporary_layers = set()
 
     def layer_signals(self, layer):
@@ -158,6 +162,7 @@ class MemoryLayerSaver(LayerConnector):
         self.load_failed = False
         filepath = self.memory_layer_file()
         layers = list(self.memory_layers())
+        orphaned = False
         # Projects saved by older plugin versions may hold an empty attachment
         if QFileInfo(filepath).size() > 0 and layers:
             log(f"Loading memory layers from {filepath} ({len(layers)} layers)")
@@ -168,6 +173,7 @@ class MemoryLayerSaver(LayerConnector):
                     progress = Progress(self.tr("Loading memory layers"))
                 with Reader(filepath, progress) as reader:
                     reader.read_layers(layers)
+                    orphaned = bool(set(reader.layer_ids) - {layer.id() for layer in layers})
             except Exception as e:
                 # From there on the file holds more than the layers, it must not be overwritten
                 self.load_failed = True
@@ -186,8 +192,13 @@ class MemoryLayerSaver(LayerConnector):
                 if progress:
                     progress.finish()
 
+        elif QFileInfo(filepath).size() > 0:
+            orphaned = self.file_has_layers(filepath)
+
         self.warn_about_mismatching_legacy_file()
         self.set_stored_state(layers)
+        # Older plugin versions left the data of the layers which were not memory layers any more
+        self._has_orphaned_data = orphaned
 
     def save_data(self):
         """Write the layers to the .mldata file"""
@@ -201,8 +212,8 @@ class MemoryLayerSaver(LayerConnector):
         filepath = self.memory_layer_file(fallback_to_legacy=False)
         has_data = bool(filepath) and QFileInfo(filepath).size() > 0
 
-        if not layers and not has_data:
-            self.remove_empty_attachment(filepath)
+        if not layers:
+            self.discard_data(filepath, has_data)
             return
         # Check if the mldata file exists and if any memory layer has been modified
         if has_data and not self.needs_rewrite(layers):
@@ -224,8 +235,12 @@ class MemoryLayerSaver(LayerConnector):
         self._busy = True
         try:
             if has_data and Settings.keep_backup():
-                self.backup_file(filepath, BACKUP_SUFFIX)
-            total = sum(self.total_features(layer) for layer in layers)
+                if self._moved_layer_ids and not self.has_deleted_layers():
+                    # The moved data is safe in its new place, and must not stay here
+                    self.remove_data_file(BACKUP_SUFFIX)
+                else:
+                    self.backup_file(filepath, BACKUP_SUFFIX)
+            total =sum(self.total_features(layer) for layer in layers)
             if total >= PROGRESS_MIN_FEATURES:
                 progress = Progress(self.tr("Saving memory layers"), total)
             with Writer(filepath, self.format_version(layers), len(layers), progress) as writer:
@@ -276,10 +291,38 @@ class MemoryLayerSaver(LayerConnector):
         self.has_modified_layers = False
         self._stored_legacy_mode = Settings.legacy_mode()
         self._fingerprints = {layer.id(): self.fingerprint(layer) for layer in layers}
+        self._moved_layer_ids = set()
+        self._has_orphaned_data = False
+
+    def has_deleted_layers(self):
+        """Whether the file holds layers which are gone from the project, not moved to a file of their own"""
+        return self._has_orphaned_data or bool(set(self._fingerprints) - self._moved_layer_ids - self.current_ids())
+
+    def current_ids(self):
+        return {layer.id() for layer in self.memory_layers()}
+
+    def discard_data(self, filepath, has_data):
+        """No memory layer is left: nothing has to stay in the project. Data of deleted layers
+        is kept in the backup until the next save, as they cannot be found anywhere else."""
+        if not has_data:
+            self.remove_data_file("")
+            self.remove_data_file(BACKUP_SUFFIX)
+            return
+        if not self.may_overwrite(filepath, []):
+            self.has_modified_layers = True
+            return
+        if Settings.keep_backup() and self.has_deleted_layers():
+            self.backup_file(filepath, BACKUP_SUFFIX)
+        else:
+            self.remove_data_file(BACKUP_SUFFIX)
+        self.remove_data_file("")
+        self.load_failed = False
+        self.set_stored_state([])
 
     def needs_rewrite(self, layers):
         return (
             self.has_modified_layers
+            or self._has_orphaned_data
             or Settings.always_rewrite()
             or self._stored_legacy_mode != Settings.legacy_mode()
             or self._fingerprints != {layer.id(): self.fingerprint(layer) for layer in layers}
@@ -339,6 +382,32 @@ class MemoryLayerSaver(LayerConnector):
         except MldataError:
             # Unreadable does not mean empty
             return True
+
+    @staticmethod
+    def file_has_layers(filepath):
+        try:
+            with Reader(filepath) as reader:
+                return reader.has_layers()
+        except MldataError:
+            # Nothing can be told about it, it is left alone
+            return False
+
+    def data_file(self, suffix):
+        """The path of a file of the plugin for this project, None if there is none"""
+        if Settings.legacy_mode():
+            path = self.legacy_memory_layer_file() + suffix
+            return path if QFileInfo(path).exists() else None
+        name = MLDATA_NAME + suffix
+        return next((f for f in QgsProject.instance().attachedFiles() if f.endswith(name)), None)
+
+    def remove_data_file(self, suffix):
+        path = self.data_file(suffix)
+        if not path:
+            return
+        if Settings.legacy_mode():
+            QFile.remove(path)
+        else:
+            QgsProject.instance().removeAttachedFile(path)
 
     def backup_file(self, filepath, suffix):
         """Copy a mldata file aside, in the same place as the file itself"""
@@ -451,6 +520,7 @@ class MemoryLayerSaver(LayerConnector):
         # At this point, the layer is no longer a memory layer, so we disconnect from it
         layer = self.sender()
         if not Settings.is_saved_layer(layer):
+            self._moved_layer_ids.add(layer.id())
             self.disconnect_layer(layer)
 
     def show_info(self):

@@ -13,7 +13,10 @@ from .layer_connector import LayerConnector
 from .layer_tools import (
     RestoreDialog,
     convert_to_memory_layer,
+    export_errors_details,
+    export_errors_summary,
     export_to_geopackage,
+    export_to_separate_geopackages,
     extract_entry,
     mldata_entries,
     restore_layers,
@@ -577,7 +580,7 @@ class MemoryLayerSaver(LayerConnector):
         QMessageBox.information(iface.mainWindow(), "Memory Layer Saver", message)
 
     def export_layers(self):
-        """Export the memory layers to a GeoPackage, and offer to use it instead"""
+        """Export the memory layers to one GeoPackage or to one per layer, and offer to use them instead"""
         layers = self.memory_layers()
         if not layers:
             QMessageBox.information(
@@ -586,27 +589,64 @@ class MemoryLayerSaver(LayerConnector):
                 self.tr("This project contains no memory layers to be saved"),
             )
             return
-        path, _filter = QFileDialog.getSaveFileName(
-            iface.mainWindow(), self.tr("Export memory layers"), "", self.tr("GeoPackage (*.gpkg)")
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".gpkg"):
-            path += ".gpkg"
 
-        exported, errors = export_to_geopackage(layers, path)
-        message = self.tr("{0} layers exported to {1}.").format(len(exported), path)
+        separate = len(layers) > 1 and self.ask_for_separate_files(len(layers))
+        if separate is None:
+            return
+        if separate:
+            target = QFileDialog.getExistingDirectory(iface.mainWindow(), self.tr("Export memory layers"))
+            if not target:
+                return
+            exported, errors = export_to_separate_geopackages(layers, target)
+        else:
+            target, _filter = QFileDialog.getSaveFileName(
+                iface.mainWindow(), self.tr("Export memory layers"), "", self.tr("GeoPackage (*.gpkg)")
+            )
+            if not target:
+                return
+            if not target.lower().endswith(".gpkg"):
+                target += ".gpkg"
+            exported, errors = export_to_geopackage(layers, target)
+
+        message = self.tr("{0} layers exported to {1}.").format(len(exported), target)
         if errors:
-            message += "\n\n" + self.tr("Not exported:") + "\n"
-            message += "\n".join(f"{name}: {error}" for name, error in errors.items())
+            message += "\n\n" + self.tr("Not exported:") + "\n" + export_errors_summary(errors)
         if not exported:
-            QMessageBox.warning(iface.mainWindow(), self.tr("Memory Layer Saver"), message)
+            self.export_result_box(message, errors, False).exec()
             return
         message += "\n\n" + self.tr("Make the exported layers of this project use the GeoPackage from now on?")
-        answer = QMessageBox.question(iface.mainWindow(), self.tr("Memory Layer Saver"), message)
-        if answer == QMessageBox.StandardButton.Yes:
-            switch_to_geopackage(exported, path)
+        if self.export_result_box(message, errors, True).exec() == QMessageBox.StandardButton.Yes:
+            switch_to_geopackage(exported)
             QgsProject.instance().setDirty(True)
+
+    def ask_for_separate_files(self, count):
+        """Whether to export to one file per layer. None if the user cancels."""
+        box = QMessageBox(iface.mainWindow())
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Export memory layers"))
+        box.setText(self.tr("How should the {0} memory layers be exported?").format(count))
+        single = box.addButton(self.tr("One GeoPackage"), QMessageBox.ButtonRole.AcceptRole)
+        separate = box.addButton(self.tr("One file per layer"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(single)
+        box.exec()
+        if box.clickedButton() == single:
+            return False
+        return True if box.clickedButton() == separate else None
+
+    def export_result_box(self, message, errors, ask):
+        """The complete errors go to the details, which scroll: the dialog itself has to fit the screen"""
+        box = QMessageBox(iface.mainWindow())
+        box.setWindowTitle(self.tr("Memory Layer Saver"))
+        box.setText(message)
+        box.setIcon(QMessageBox.Icon.Warning if errors else QMessageBox.Icon.Question)
+        if errors:
+            box.setDetailedText(export_errors_details(errors))
+        if ask:
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        else:
+            box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        return box
 
     def convert_temporary_layers(self):
         """Turn the layers stored in temporary files into memory layers, which are saved with the project"""

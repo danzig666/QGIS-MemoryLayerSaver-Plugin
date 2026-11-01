@@ -3,6 +3,15 @@
 This is the changelog of a fork of [Memory Layer Saver](https://github.com/YoannQDQ/qgis-memory-layer-saver). Versions up to 6.0.1 are the original project,
 and all issue numbers below refer to its issue tracker.
 
+## [6.2.1] - 2026-11-01
+GeoPackage export:
+- Layers with a field named `fid` now export whatever it holds: duplicates, empty values, text or decimals. It stays
+  a regular column with its values, next to a separate key column. Empty values were silently replaced
+- Fields named `geom`, or with names which only differ by case, no longer make the export fail
+- A failed export no longer leaves an incomplete table behind, and a layer is only switched to a complete one
+- Choice between one GeoPackage and one file per layer. File names are made safe, and existing files are not replaced
+- The dialog no longer outgrows the screen when there are errors: the complete errors are in its details
+
 ## [6.2.0] - 2026-11-01
 - New plugin ID, `MemoryLayerSaverDanzig`. The plugin had the same ID as the original one, so QGIS merged the two
   into a single entry when plugin repositories offered both. Existing projects and settings keep working. To upgrade

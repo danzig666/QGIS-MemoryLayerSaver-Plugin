@@ -87,7 +87,8 @@ save after that if they were deleted. Whatever this setting, overwriting a file 
 
 - **Display memory layer information**: the layers saved with the project.
 - **Export memory layers to GeoPackage**: to share a project or use it with QGIS Server, which does not load the plugin.
-  The project can then be switched to the GeoPackage.
+  Layers go to one GeoPackage, or to one file per layer with existing files left alone. The project can then be switched
+  to the export. A field named `fid` stays a regular column, next to a separate key column.
 - **Convert temporary file layers to memory layers**: makes outputs of GDAL or GRASS algorithms persistent.
 - **Restore layers from file**: adds layers from a `.mldata` or `.bak` file or from a project archive to the project,
   including what can be read from a damaged file.

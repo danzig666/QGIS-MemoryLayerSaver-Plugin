@@ -8,10 +8,12 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsFeatureRequest,
     QgsProject,
+    QgsProviderConnectionException,
+    QgsProviderRegistry,
     QgsVectorFileWriter,
     QgsVectorLayer,
 )
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import QFile, Qt
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -27,9 +29,22 @@ from .reader import Reader, wkb_type_name
 from .settings import Settings
 from .toolbox import log_warning, unfiltered_provider
 
+RESERVED_FILE_NAME = re.compile(r"CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]", re.IGNORECASE)
+MAX_ERROR_LENGTH = 100
+MAX_ERRORS_SHOWN = 5
+
+
+def safe_name(name):
+    """A layer name made safe for a file name, keeping accented letters"""
+    base = re.sub(r"[^\w-]+", "_", name).strip("_-")[:100].rstrip("_-") or "layer"
+    return f"{base}_layer" if RESERVED_FILE_NAME.fullmatch(base) else base
+
 
 def unique_table_name(name, used):
-    base = re.sub(r"[^\w]+", "_", name).strip("_") or "layer"
+    base = safe_name(name).replace("-", "_")
+    # These prefixes are reserved by the GeoPackage format
+    if base.lower().startswith(("gpkg_", "rtree_", "sqlite_")):
+        base = f"layer_{base}"
     candidate = base
     index = 1
     while candidate.lower() in used:
@@ -39,38 +54,157 @@ def unique_table_name(name, used):
     return candidate
 
 
-def export_to_geopackage(layers, path):
-    """Export the whole content of layers to a GeoPackage, whatever their filter.
+def unique_file_path(folder, name):
+    """A path in folder which does not exist yet, based on the name of a layer"""
+    base = safe_name(name)
+    candidate = Path(folder) / f"{base}.gpkg"
+    index = 1
+    while candidate.exists():
+        index += 1
+        candidate = Path(folder) / f"{base}_{index}.gpkg"
+    return str(candidate)
 
-    Returns the {layer: table name} of the exported layers, and the {layer name: reason} of the others."""
+
+def unique_column_name(wanted, used):
+    candidate = wanted
+    index = 1
+    while candidate.lower() in used:
+        index += 1
+        candidate = f"{wanted}_{index}"
+    return candidate
+
+
+def geopackage_options(layer, table, overwrite_file):
+    """Writer options keeping all attributes of a layer, whatever the names of its fields"""
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "GPKG"
+    options.layerName = table
+    options.actionOnExistingFile = (
+        QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteFile
+        if overwrite_file
+        else QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteLayer
+    )
+
+    # Column names are not case sensitive in a GeoPackage
+    names = []
+    used = set()
+    for field in layer.fields():
+        name = unique_column_name(field.name(), used)
+        used.add(name.lower())
+        names.append(name)
+    options.attributes = list(range(len(names)))
+    options.attributesExportNames = names
+
+    # A field named fid would become the primary key, so it would have to hold unique integers. It stays
+    # a regular column with its values, next to a key column of its own. The same goes for the geometry column.
+    layer_options = []
+    if "fid" in used:
+        layer_options.append("FID=" + unique_column_name("gpkg_fid", used))
+    if "geom" in used:
+        layer_options.append("GEOMETRY_NAME=" + unique_column_name("geometry", used))
+    options.layerOptions = layer_options
+    return options
+
+
+def discard_table(path, table, whole_file):
+    """Remove what a failed export left behind"""
+    try:
+        if whole_file:
+            QFile.remove(path)
+        else:
+            QgsProviderRegistry.instance().providerMetadata("ogr").createConnection(path, {}).dropVectorTable("", table)
+    except QgsProviderConnectionException as e:
+        log_warning(f"Cannot remove the incomplete table {table} from {path}: {e}")
+
+
+def export_layer(layer, path, table, overwrite_file):
+    """Export the whole content of a layer, whatever its filter. Returns the error, if any."""
+    context = QgsProject.instance().transformContext()
+    options = geopackage_options(layer, table, overwrite_file)
+    with unfiltered_provider(layer):
+        expected = layer.dataProvider().featureCount()
+        result = QgsVectorFileWriter.writeAsVectorFormatV3(layer, path, context, options)
+    if result[0] == QgsVectorFileWriter.WriterError.NoError:
+        written = QgsVectorLayer(f"{path}|layername={table}", "check", "ogr")
+        count = written.featureCount() if written.isValid() else -1
+        del written
+        if count == expected:
+            return ""
+        error = f"{count} of {expected} features were written"
+    else:
+        error = result[1]
+    log_warning(f"Cannot export layer {layer.name()} to {path}: {error}")
+    return error
+
+
+def export_to_geopackage(layers, path):
+    """Export layers to the tables of a single GeoPackage, replacing the file.
+
+    Returns the {layer: (path, table)} of the exported layers, and the {layer name: reason} of the others."""
     exported = {}
     errors = {}
     used = set()
-    context = QgsProject.instance().transformContext()
     for layer in layers:
         if layer.isEditable():
             errors[layer.name()] = "the layer is being edited"
             continue
-        options = QgsVectorFileWriter.SaveVectorOptions()
-        options.driverName = "GPKG"
-        options.layerName = unique_table_name(layer.name(), used)
-        options.actionOnExistingFile = (
-            QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteLayer
-            if exported
-            else QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteFile
-        )
-        with unfiltered_provider(layer):
-            result = QgsVectorFileWriter.writeAsVectorFormatV3(layer, path, context, options)
-        if result[0] == QgsVectorFileWriter.WriterError.NoError:
-            exported[layer] = options.layerName
+        table = unique_table_name(layer.name(), used)
+        error = export_layer(layer, path, table, not exported)
+        if error:
+            errors[layer.name()] = error
+            discard_table(path, table, not exported)
         else:
-            errors[layer.name()] = result[1]
+            exported[layer] = (path, table)
     return exported, errors
 
 
-def switch_to_geopackage(exported, path):
-    """Make exported layers read from the GeoPackage, keeping their style and filter"""
-    for layer, table in exported.items():
+def export_to_separate_geopackages(layers, folder):
+    """Export each layer to a GeoPackage of its own in a folder, leaving the existing files alone.
+
+    Returns the {layer: (path, table)} of the exported layers, and the {layer name: reason} of the others."""
+    exported = {}
+    errors = {}
+    for layer in layers:
+        if layer.isEditable():
+            errors[layer.name()] = "the layer is being edited"
+            continue
+        path = unique_file_path(folder, layer.name())
+        table = unique_table_name(layer.name(), set())
+        error = export_layer(layer, path, table, True)
+        if error:
+            errors[layer.name()] = error
+            discard_table(path, table, True)
+        else:
+            exported[layer] = (path, table)
+    return exported, errors
+
+
+def short_error(error):
+    """Writers report the same error for each feature: only keep the first one, and how many there are"""
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if lines[0].endswith(":") and len(lines) > 1:
+        lines = lines[1:]
+    text = lines[0] if len(lines[0]) <= MAX_ERROR_LENGTH else lines[0][:MAX_ERROR_LENGTH] + "..."
+    return f"{text} ({len(lines)} times)" if len(lines) > 1 else text
+
+
+def export_errors_summary(errors):
+    """A few lines about the layers which were not exported, for a dialog which has to fit the screen"""
+    lines = [f"{name}: {short_error(error)}" for name, error in list(errors.items())[:MAX_ERRORS_SHOWN]]
+    if len(errors) > MAX_ERRORS_SHOWN:
+        lines.append(f"... and {len(errors) - MAX_ERRORS_SHOWN} more")
+    return "\n".join(lines)
+
+
+def export_errors_details(errors):
+    return "\n\n".join(f"{name}:\n{error}" for name, error in errors.items())
+
+
+def switch_to_geopackage(exported):
+    """Make exported layers read from their GeoPackage, keeping their style and filter"""
+    for layer, (path, table) in exported.items():
         subset = layer.subsetString()
         layer.setDataSource(f"{path}|layername={table}", layer.name(), "ogr")
         if subset and not layer.setSubsetString(subset):

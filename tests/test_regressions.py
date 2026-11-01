@@ -30,7 +30,7 @@ from qgis.PyQt.QtCore import (  # noqa: E402
     QTime,
     QTimeZone,
 )
-from qgis.PyQt.QtWidgets import QMainWindow, QMenu, QMessageBox  # noqa: E402
+from qgis.PyQt.QtWidgets import QFileDialog, QMainWindow, QMenu, QMessageBox  # noqa: E402
 
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(WORK / "settings"))
@@ -38,6 +38,7 @@ QCoreApplication.setOrganizationName("MLSTests")
 QCoreApplication.setApplicationName("MLSTests")
 
 from qgis.core import (  # noqa: E402
+    NULL,
     Qgis,
     QgsApplication,
     QgsCoordinateReferenceSystem,
@@ -1177,20 +1178,253 @@ def export_to_geopackage_includes_filtered_features_and_can_switch():
     gpkg = str(Path(tempfile.mkdtemp(dir=WORK)) / "out.gpkg")
     exported, errors = layer_tools.export_to_geopackage([a, same_name, with_fid, editing], gpkg)
     assert list(errors) == ["E"], errors
-    assert set(exported.values()) == {"A_b", "A_b_2", "F"}, exported
+    assert {table for _path, table in exported.values()} == {"A_b", "A_b_2", "F"}, exported
     assert a.subsetString() == '"a" < 3' and a.featureCount() == 3
     check = QgsVectorLayer(f"{gpkg}|layername=A_b", "c", "ogr")
     assert check.isValid() and check.featureCount() == 10
     del check
     editing.rollBack()
     style_before = a.renderer().type()
-    layer_tools.switch_to_geopackage(exported, gpkg)
+    layer_tools.switch_to_geopackage(exported)
     assert a.dataProvider().name() == "ogr" and a.featureCount() == 3 and a.subsetString() == '"a" < 3'
     assert same_name.isValid() and same_name.featureCount() == 2
     assert with_fid.isValid() and with_fid.featureCount() == 2
     assert a.renderer().type() == style_before
     assert not Settings.is_saved_layer(a)
     assert a.customProperty("skipMemoryLayersCheck") is None
+
+
+def table_rows(path, table, field):
+    check = QgsVectorLayer(f"{path}|layername={table}", "check", "ogr")
+    assert check.isValid(), (path, table)
+    return sorted(str(f[field]) for f in check.getFeatures())
+
+
+@test
+def export_keeps_any_field_named_fid():
+    cases = {
+        "dup_int": ("fid:integer", [1, 1, 2], ["1", "1", "2"]),
+        "unique_int": ("fid:integer", [5, 9], ["5", "9"]),
+        "upper": ("FID:integer", [1, 1], ["1", "1"]),
+        "text": ("fid:string", ["abc", "abc"], ["abc", "abc"]),
+        "decimal": ("fid:double", [1.5, 1.5], ["1.5", "1.5"]),
+    }
+    new_project("t")
+    gpkg = str(Path(tempfile.mkdtemp(dir=WORK)) / "fid.gpkg")
+    layers = []
+    for name, (definition, values, _expected) in cases.items():
+        lyr = layer(name, 0, definition)
+        feats = []
+        for value in values:
+            f = QgsFeature(lyr.fields())
+            f.setAttributes([value])
+            f.setGeometry(QgsGeometry.fromWkt("POINT(1 1)"))
+            feats.append(f)
+        assert lyr.dataProvider().addFeatures(feats)[0]
+        layers.append(lyr)
+    exported, errors = layer_tools.export_to_geopackage(layers, gpkg)
+    assert not errors, errors
+    for name, (definition, _values, expected) in cases.items():
+        assert table_rows(gpkg, name, definition.split(":")[0]) == expected, name
+
+
+@test
+def export_keeps_empty_fid_values():
+    new_project("t")
+    lyr = layer("N", 0, "fid:integer&field=x:string")
+    feats = [QgsFeature(lyr.fields()) for _i in range(2)]
+    lyr.dataProvider().addFeatures(feats)
+    gpkg = str(Path(tempfile.mkdtemp(dir=WORK)) / "n.gpkg")
+    assert not layer_tools.export_to_geopackage([lyr], gpkg)[1]
+    check = QgsVectorLayer(f"{gpkg}|layername=N", "check", "ogr")
+    values = [f["fid"] for f in check.getFeatures()]
+    assert len(values) == 2 and not any(value not in (None, NULL) for value in values), values
+
+
+@test
+def export_handles_other_awkward_field_names():
+    new_project("t")
+    fields = "fid:integer&field=gpkg_fid:integer&field=geom:string&field=geometry:string&field=abc:string&field=ABC:string"
+    lyr = layer("W", 2, fields)
+    lyr.dataProvider().changeAttributeValues(
+        {f.id(): {1: 7, 2: "g", 3: "h", 4: "low", 5: "up"} for f in lyr.getFeatures()}
+    )
+    gpkg = str(Path(tempfile.mkdtemp(dir=WORK)) / "w.gpkg")
+    exported, errors = layer_tools.export_to_geopackage([lyr], gpkg)
+    assert not errors, errors
+    check = QgsVectorLayer(f"{gpkg}|layername=W", "check", "ogr")
+    assert check.featureCount() == 2
+    names = {x.name().lower() for x in check.fields()}
+    assert {"fid", "gpkg_fid", "geom", "geometry", "abc", "abc_2"} <= names, names
+    first = next(check.getFeatures())
+    assert first["gpkg_fid"] == 7 and first["geom"] == "g" and first["abc"] == "low" and first["ABC_2"] == "up"
+    assert first.hasGeometry() and first.geometry().asWkt() == "Point (0 0)"
+
+
+@test
+def switched_layer_with_fid_field_keeps_filter_and_values():
+    new_project("t")
+    lyr = layer("S", 0, "fid:integer&field=x:string")
+    feats = []
+    for value in (1, 1, 2):
+        f = QgsFeature(lyr.fields())
+        f.setAttributes([value, "v"])
+        f.setGeometry(QgsGeometry.fromWkt("POINT(1 1)"))
+        feats.append(f)
+    lyr.dataProvider().addFeatures(feats)
+    lyr.setSubsetString('"fid" = 1')
+    gpkg = str(Path(tempfile.mkdtemp(dir=WORK)) / "s.gpkg")
+    exported, errors = layer_tools.export_to_geopackage([lyr], gpkg)
+    assert not errors, errors
+    layer_tools.switch_to_geopackage(exported)
+    assert lyr.dataProvider().name() == "ogr" and lyr.featureCount() == 2, lyr.featureCount()
+    assert sorted(f["fid"] for f in lyr.getFeatures()) == [1, 1]
+
+
+@test
+def failed_export_leaves_nothing_and_never_switches():
+    new_project("t")
+    good, bad, last = layer("Good", 3), layer("Bad", 3), layer("Last", 3)
+    gpkg = str(Path(tempfile.mkdtemp(dir=WORK)) / "f.gpkg")
+    real = QgsVectorFileWriter.writeAsVectorFormatV3
+
+    class Failing:
+        @staticmethod
+        def writeAsVectorFormatV3(lyr, path, context, options):
+            result = real(lyr, path, context, options)
+            if lyr.name() == "Bad":
+                return (QgsVectorFileWriter.WriterError.ErrFeatureWriteFailed, "Feature write errors:\nboom", "", "")
+            return result
+
+    original = layer_tools.QgsVectorFileWriter
+    Writer_ = type("W", (), {k: getattr(original, k) for k in ("SaveVectorOptions", "ActionOnExistingFile", "WriterError")})
+    Writer_.writeAsVectorFormatV3 = Failing.writeAsVectorFormatV3
+    layer_tools.QgsVectorFileWriter = Writer_
+    try:
+        exported, errors = layer_tools.export_to_geopackage([good, bad, last], gpkg)
+    finally:
+        layer_tools.QgsVectorFileWriter = original
+    assert list(errors) == ["Bad"], errors
+    assert [lyr.name() for lyr in exported] == ["Good", "Last"]
+    assert not QgsVectorLayer(f"{gpkg}|layername=Bad", "check", "ogr").isValid(), "incomplete table left"
+    assert QgsVectorLayer(f"{gpkg}|layername=Good", "check", "ogr").featureCount() == 3
+    assert QgsVectorLayer(f"{gpkg}|layername=Last", "check", "ogr").featureCount() == 3
+    assert bad.dataProvider().name() == "memory"
+
+
+@test
+def separate_files_have_safe_unique_names_and_keep_existing_files():
+    new_project("t")
+    folder = Path(tempfile.mkdtemp(dir=WORK))
+    (folder / "A_b.gpkg").write_bytes(b"existing")
+    names = ["A b", "A b", 'x/y\\z:*?"<>|', "CON", "Övezethatár", "...", "gpkg_table"]
+    layers = [layer(name, 2) for name in names]
+    exported, errors = layer_tools.export_to_separate_geopackages(layers, str(folder))
+    assert not errors, errors
+    assert (folder / "A_b.gpkg").read_bytes() == b"existing"
+    files = {Path(path).name for path, _table in exported.values()}
+    assert files == {
+        "A_b_2.gpkg",
+        "A_b_3.gpkg",
+        "x_y_z.gpkg",
+        "CON_layer.gpkg",
+        "Övezethatár.gpkg",
+        "layer.gpkg",
+        "gpkg_table.gpkg",
+    }, files
+    for lyr, (path, table) in exported.items():
+        assert QgsVectorLayer(f"{path}|layername={table}", "check", "ogr").featureCount() == 2, (path, table)
+    layer_tools.switch_to_geopackage(exported)
+    assert all(lyr.dataProvider().name() == "ogr" and lyr.featureCount() == 2 for lyr in layers)
+
+
+@test
+def failed_separate_export_removes_its_file():
+    new_project("t")
+    folder = Path(tempfile.mkdtemp(dir=WORK))
+    bad = layer("Bad", 3)
+    real_export = layer_tools.export_layer
+
+    def fail(lyr, path, table, overwrite):
+        real_export(lyr, path, table, overwrite)
+        return "boom"
+
+    layer_tools.export_layer = fail
+    try:
+        exported, errors = layer_tools.export_to_separate_geopackages([bad], str(folder))
+    finally:
+        layer_tools.export_layer = real_export
+    assert not exported and list(errors) == ["Bad"]
+    assert not list(folder.glob("*.gpkg")), list(folder.glob("*"))
+
+
+@test
+def export_dialog_fits_the_screen_with_many_errors():
+    line = "Feature creation error (OGR error: failed to execute insert : UNIQUE constraint failed: Övezethatár.fid)"
+    many = "Feature write errors:\n" + "\n".join([line] * 5000)
+    errors = {f"Layer {i}": many for i in range(40)}
+    assert layer_tools.short_error(many) == f"{line[:100]}... (5000 times)", layer_tools.short_error(many)
+    summary = layer_tools.export_errors_summary(errors)
+    assert len(summary.splitlines()) == 6 and "35 more" in summary, summary
+    box = plugin.export_result_box("1 layers exported.\n\nNot exported:\n" + summary, errors, True)
+    assert box.detailedText().count(line) == 5000 * 40
+    # Pixels depend on the fonts of the platform: it is the content of the main text which has to stay small
+    assert len(box.text().splitlines()) <= 10 and len(box.text()) < 1000, box.text()
+
+
+def run_export(mode, target, answer_yes=False):
+    """Go through the whole export of the plugin, with what the user would choose"""
+    import MemoryLayerSaverDanzig.memory_layer_saver as module
+
+    calls = []
+    real_ask = plugin.ask_for_separate_files
+    real_box = plugin.export_result_box
+    real_save = QFileDialog.getSaveFileName
+    real_folder = QFileDialog.getExistingDirectory
+
+    def box(message, errors, ask):
+        dialogs.append(("result", message))
+        result = real_box(message, errors, ask)
+        result.exec = lambda: QMessageBox.StandardButton.Yes if answer_yes else QMessageBox.StandardButton.No
+        return result
+
+    plugin.ask_for_separate_files = lambda count: calls.append(count) or mode
+    plugin.export_result_box = box
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (target, ""))
+    QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: target)
+    try:
+        plugin.export_layers()
+    finally:
+        del plugin.ask_for_separate_files
+        del plugin.export_result_box
+        QFileDialog.getSaveFileName = real_save
+        QFileDialog.getExistingDirectory = real_folder
+    assert module.export_errors_summary
+    return calls
+
+
+@test
+def export_menu_asks_how_only_with_several_layers():
+    new_project("t")
+    one = layer("One", 2)
+    folder = Path(tempfile.mkdtemp(dir=WORK))
+    assert run_export(False, str(folder / "single")) == []
+    assert (folder / "single.gpkg").exists()
+    assert one.dataProvider().name() == "memory"
+    two = layer("Two", 3)
+    assert run_export(True, str(folder), True) == [2]
+    assert (folder / "One.gpkg").exists() and (folder / "Two.gpkg").exists()
+    assert one.dataProvider().name() == "ogr" and two.featureCount() == 3
+
+
+@test
+def export_menu_can_be_cancelled():
+    new_project("t")
+    a, _b = layer("A", 2), layer("B", 2)
+    folder = Path(tempfile.mkdtemp(dir=WORK))
+    run_export(None, str(folder))
+    assert not list(folder.iterdir())
+    assert a.dataProvider().name() == "memory"
 
 
 @test

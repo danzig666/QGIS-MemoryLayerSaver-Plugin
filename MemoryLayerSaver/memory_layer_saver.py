@@ -234,12 +234,11 @@ class MemoryLayerSaver(LayerConnector):
         progress = None
         self._busy = True
         try:
-            if has_data and Settings.keep_backup():
-                if self._moved_layer_ids and not self.has_deleted_layers():
-                    # The moved data is safe in its new place, and must not stay here
-                    self.remove_data_file(BACKUP_SUFFIX)
-                else:
-                    self.backup_file(filepath, BACKUP_SUFFIX)
+            # Moved data is safe in its new place, and must not stay here
+            if has_data and Settings.keep_backup() and (self.has_deleted_layers() or not self._moved_layer_ids):
+                self.backup_file(filepath, BACKUP_SUFFIX)
+            else:
+                self.remove_data_file(BACKUP_SUFFIX)
             total =sum(self.total_features(layer) for layer in layers)
             if total >= PROGRESS_MIN_FEATURES:
                 progress = Progress(self.tr("Saving memory layers"), total)
@@ -324,6 +323,7 @@ class MemoryLayerSaver(LayerConnector):
             self.has_modified_layers
             or self._has_orphaned_data
             or Settings.always_rewrite()
+            or (not Settings.keep_backup() and self.data_file(BACKUP_SUFFIX))
             or self._stored_legacy_mode != Settings.legacy_mode()
             or self._fingerprints != {layer.id(): self.fingerprint(layer) for layer in layers}
         )

@@ -5,7 +5,8 @@
 - Writing is atomic: a failed save leaves the previous file untouched, and is reported
 - Truncated or corrupt files are detected instead of silently leaving layers empty
 - After a failed load, the file is only overwritten if the user confirms it, and is kept aside (`.failed-load.bak`)
-- The previous data is kept in a `.bak` file (can be disabled), and the user is asked before empty layers replace features
+- The user is asked before empty layers replace features
+- New setting to keep the previous data in a `.bak` file (off by default, as it doubles the space taken in the project)
 - Fixes issue #13 - Fields of length or precision above 32767, and user type fields on Qt6, no longer break the save
 - Saving is no longer affected by edit sessions: only committed data is saved. This fixes filtered layers in edit mode
   losing the hidden features, uncommitted deletions being saved, and uncommitted field deletions erasing their values
@@ -34,8 +35,8 @@
 - Fix the 'Report issues' link in the about dialog
 - Unloading the plugin no longer leaves the instance connected to the project, nor the menu behind
 - Projects without memory layers no longer get an empty attachment
-- The project shrinks when layers leave it: data of layers made permanent is gone on the next save, data of deleted
-  layers stays in the backup until the next rewrite, and what older versions left behind is cleaned up on save
+- The project shrinks when layers leave it, and what older versions left behind is cleaned up on save. With backups
+  on, data of deleted layers stays in the backup until the next rewrite
 - The settings dialog has a parent and a title, and its typo is fixed
 
 ## [6.0.1] - 2026-03-03

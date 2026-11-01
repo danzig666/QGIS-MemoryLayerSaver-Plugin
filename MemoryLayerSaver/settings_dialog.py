@@ -25,7 +25,8 @@ class SettingsDialog(QDialog):
         self.backup_checkbox.setToolTip(
             self.tr(
                 "The previous data is kept next to the mldata file, and can be restored with "
-                "'Restore layers from file'. This doubles the space memory layers take in the project."
+                "'Restore layers from file'. This doubles the space memory layers take in the project. "
+                "Turning this off removes the existing backup on the next project save."
             )
         )
 

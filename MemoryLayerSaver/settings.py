@@ -59,7 +59,7 @@ class Settings:
 
     @classmethod
     def keep_backup(cls):
-        return cls.get_settings().value(KEEP_BACKUP, True, bool)
+        return cls.get_settings().value(KEEP_BACKUP, False, bool)
 
     @classmethod
     def set_keep_backup(cls, value):

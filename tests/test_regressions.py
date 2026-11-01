@@ -958,6 +958,44 @@ def layers_written_with_the_settings_on_removal():
 
 
 @test
+def backups_are_off_by_default():
+    Settings.get_settings().remove("MemoryLayerSaver/keepBackup")
+    assert Settings.keep_backup() is False
+    path = new_project("t")
+    layer("A", 3)
+    proj.write(path)
+    edit_add_feature(get("A"))
+    proj.write(path)
+    assert scan_bytes(entry_bytes(path))[1] == {"A": 4}
+    assert entry_bytes(path, ".bak") is None
+    # Failed loads are kept whatever the setting
+    replace_mldata(path, lambda d: d[: len(d) // 2])
+    reopen(path)
+    damaged = entry_bytes(path)
+    edit_add_feature(get("A"))
+    answer["value"] = QMessageBox.StandardButton.Yes
+    proj.write(path)
+    assert entry_bytes(path, "layers.mldata.failed-load.bak") == damaged
+
+
+@test
+def turning_backups_off_removes_the_existing_one():
+    path = new_project("t")
+    layer("A", 3)
+    proj.write(path)
+    edit_add_feature(get("A"))
+    proj.write(path)
+    assert entry_bytes(path, ".bak") is not None
+    reopen(path)
+    Settings.set_keep_backup(False)
+    proj.write(path)
+    assert entry_bytes(path, ".bak") is None
+    assert scan_bytes(entry_bytes(path))[1] == {"A": 4}
+    reopen(path)
+    assert counts() == {"A": 4}
+
+
+@test
 def emptying_all_layers_asks_first():
     path = new_project("t")
     a = layer("A", 3)

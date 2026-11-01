@@ -17,6 +17,6 @@ jobs:
         qgis: ["3.40", "3.44", "4.2"]
     container: qgis/qgis:${{ matrix.qgis }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run the regression tests
         run: python3 tests/test_regressions.py . "$RUNNER_TEMP/work"

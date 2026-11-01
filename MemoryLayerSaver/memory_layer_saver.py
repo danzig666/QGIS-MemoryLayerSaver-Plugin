@@ -239,7 +239,7 @@ class MemoryLayerSaver(LayerConnector):
                 self.backup_file(filepath, BACKUP_SUFFIX)
             else:
                 self.remove_data_file(BACKUP_SUFFIX)
-            total =sum(self.total_features(layer) for layer in layers)
+            total = sum(self.total_features(layer) for layer in layers)
             if total >= PROGRESS_MIN_FEATURES:
                 progress = Progress(self.tr("Saving memory layers"), total)
             with Writer(filepath, self.format_version(layers), len(layers), progress) as writer:

@@ -11,6 +11,7 @@ from qgis.utils import iface
 
 from .layer_connector import LayerConnector
 from .layer_tools import (
+    LayerInfoDialog,
     RestoreDialog,
     convert_to_memory_layer,
     export_errors_details,
@@ -567,17 +568,38 @@ class MemoryLayerSaver(LayerConnector):
 
     def show_info(self):
         """Display some information about the memory layers"""
-        layer_info = [(layer.name(), layer.featureCount()) for layer in self.memory_layers()]
-        if layer_info:
-            message = self.tr("The following memory layers will be saved with this project:")
-            message += "<br>"
-            message += "<br>".join(
-                self.tr("- <b>{0}</b> ({1} features)", "Layer name and number of features", n=count).format(name, count)
-                for name, count in layer_info
+        dialog = self.info_dialog()
+        if dialog is None:
+            QMessageBox.information(
+                iface.mainWindow(), "Memory Layer Saver", self.tr("This project contains no memory layers to be saved")
             )
         else:
-            message = self.tr("This project contains no memory layers to be saved")
-        QMessageBox.information(iface.mainWindow(), "Memory Layer Saver", message)
+            dialog.exec()
+
+    def info_dialog(self):
+        layers = self.memory_layers()
+        if not layers:
+            return None
+        version = self.format_version(layers)
+        sizes = []
+        progress = None
+        total = sum(self.total_features(layer) for layer in layers)
+        if total >= PROGRESS_MIN_FEATURES:
+            progress = Progress(self.tr("Measuring memory layers"))
+        try:
+            for i, layer in enumerate(layers):
+                try:
+                    sizes.append(Writer.layer_size(layer, version))
+                except Exception as e:  # noqa: BLE001
+                    # The save would report it, this is only information
+                    log_warning(f"Cannot measure layer {layer.name()}: {e}")
+                    sizes.append(None)
+                if progress:
+                    progress.set_value((i + 1) * 100 // len(layers))
+        finally:
+            if progress:
+                progress.finish()
+        return LayerInfoDialog(layers, sizes, iface.mainWindow())
 
     def export_layers(self):
         """Export the memory layers to one GeoPackage or to one per layer, and offer to use them instead"""

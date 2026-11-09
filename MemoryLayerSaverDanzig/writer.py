@@ -107,6 +107,23 @@ class Writer:
         ds.writeInt64(end - start)
         self._file.seek(end)
 
+    @classmethod
+    def layer_size(cls, layer, version):
+        """The number of bytes the layer takes in a file of this version, without writing anything"""
+        writer = cls(None, version)
+        # One layer at a time in memory: a device of our own does not receive the data with PyQt6
+        writer._file = QBuffer()
+        writer._file.open(QIODevice.OpenModeFlag.WriteOnly)
+        writer._dstream = QDataStream(writer._file)
+        writer._dstream.setVersion(STREAM_VERSION_V3 if version >= FORMAT_V3 else STREAM_VERSION_LEGACY)
+        writer._dstream.writeQString(layer.id())
+        if version >= FORMAT_V3:
+            writer._dstream.writeInt64(0)
+        writer.write_layer_content(layer)
+        size = writer._file.size()
+        writer._file.close()
+        return size
+
     def write_layer_content(self, layer):
         ds = self._dstream
         dp = layer.dataProvider()

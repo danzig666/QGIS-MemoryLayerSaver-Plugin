@@ -3,6 +3,11 @@
 This is the changelog of a fork of [Memory Layer Saver](https://github.com/YoannQDQ/qgis-memory-layer-saver). Versions up to 6.0.1 are the original project,
 and all issue numbers below refer to its issue tracker.
 
+## [6.2.3] - 2026-11-09
+- The memory layer information no longer outgrows the screen: it is a table which scrolls, with the number of
+  features, the size each layer adds to the saved project, the number of fields, the geometry type and the group of
+  each layer. Every column can be sorted, numbers and sizes by their value. The total is shown above it
+
 ## [6.2.2] - 2026-11-09
 Data safety:
 - Files holding values Qt cannot store can be loaded again. Qt writes such values without any error, as their type

@@ -1,6 +1,6 @@
 """Regression tests, to run with the Python of a QGIS installation (no display needed):
 
-    python-qgis tests/test_regressions.py <dir containing MemoryLayerSaverDanzig> <work dir>
+python-qgis tests/test_regressions.py <dir containing MemoryLayerSaverDanzig> <work dir>
 """
 
 import os
@@ -284,7 +284,9 @@ def bug2_geometry_field_roundtrip():
     g.dataProvider().addAttributes([QgsField("g", QMetaType.Type.User, "geometry")])
     g.updateFields()
     f = QgsFeature(g.fields())
-    f.setAttributes([QgsReferencedGeometry(QgsGeometry.fromWkt("POINT(1 2)"), QgsCoordinateReferenceSystem("EPSG:4326"))])
+    f.setAttributes(
+        [QgsReferencedGeometry(QgsGeometry.fromWkt("POINT(1 2)"), QgsCoordinateReferenceSystem("EPSG:4326"))]
+    )
     g.dataProvider().addFeatures([f])
     proj.addMapLayer(g)
     proj.write(path)
@@ -916,6 +918,210 @@ def v1_file_is_still_readable():
     assert next(a.getFeatures()).geometry().asWkt() == "Point (3 4)"
 
 
+def write_user_type(ds, name):
+    """What Qt writes for a value of a type it has no stream operator for: its type, without content"""
+    ds.writeUInt32(127)
+    ds.writeInt8(0)
+    ds.writeBytes(name + b"\0")
+
+
+def write_v2(f, layers):
+    """A v2 file, with the layers given as (layer, rows): a row is the value of an integer field 'a'
+    and a function writing the value of a string field 's'"""
+    qf = QFile(f)
+    qf.open(QIODevice.OpenModeFlag.WriteOnly)
+    ds = QDataStream(qf)
+    ds.setVersion(QDataStream.Version.Qt_4_5)
+    ds.writeRawData(b"QGis.MemoryLayerData")
+    ds.writeUInt32(2)
+    wkb = QgsGeometry.fromWkt("POINT(3 4)").asWkb()
+    for lyr, rows in layers:
+        ds.writeQString(lyr.id())
+        ds.writeQString("")
+        ds.writeInt16(2)
+        for name, qtype, typename in (("a", QMetaType.Type.Int, "integer"), ("s", QMetaType.Type.QString, "string")):
+            ds.writeQString(name)
+            ds.writeInt16(int(qtype))
+            ds.writeQString(typename)
+            ds.writeInt16(0)
+            ds.writeInt16(0)
+            ds.writeQString("")
+        for a, write_s in rows:
+            ds.writeBool(True)
+            ds.writeQVariant(a)
+            write_s(ds)
+            ds.writeUInt32(len(wkb))
+            ds.writeRawData(wkb)
+        ds.writeBool(False)
+    qf.close()
+
+
+def text(value):
+    return lambda ds: ds.writeQVariant(value)
+
+
+def unset(ds):
+    write_user_type(ds, b"QgsUnsetAttributeValue")
+
+
+def interval(ds):
+    write_user_type(ds, b"QgsInterval")
+
+
+def list_with_unset(ds):
+    ds.writeUInt32(9)
+    ds.writeInt8(0)
+    ds.writeUInt32(2)
+    ds.writeQVariant("in list")
+    unset(ds)
+
+
+@test
+def unset_values_written_by_older_versions_are_read_as_null():
+    # A .qgs project with a separate .mldata file, as older versions stored it
+    Settings.set_mldata_embedded(False)
+    path = new_project("t", "qgs")
+    a, b = layer("A", 0), layer("B", 0)
+    proj.write(path)
+    rows_a = [(1, text("x")), (2, unset), (3, text("z")), (4, interval)]
+    write_v2(path + ".mldata", [(a, rows_a), (b, [(6, text("w"))])])
+    reopen(path)
+    assert not plugin.load_failed, dialogs
+    got = {f["a"]: f["s"] for f in get("A").getFeatures()}
+    assert got[1] == "x" and got[3] == "z", got
+    assert not got[2] and not got[4], got
+    assert [(f["a"], f["s"]) for f in get("B").getFeatures()] == [(6, "w")]
+    assert scan_bytes(Path(path + ".mldata").read_bytes())[1:] == ({"A": 4, "B": 1}, [])
+    # Inside lists too
+    f = str(WORK / "list.mldata")
+    a, b = get("A"), get("B")
+    write_v2(f, [(a, [(1, list_with_unset), (2, text("after"))]), (b, [(3, text("w"))])])
+    values = []
+    with Reader(f) as r:
+        r.for_each_layer(lambda _id: values.extend(v for _f, v, _w in r.read_features(r.read_definition()["fields"])))
+    assert values == [[1, ["in list", None]], [2, "after"], [3, "w"]], values
+
+
+@test
+def unknown_unreadable_type_is_reported_and_protected():
+    Settings.set_mldata_embedded(False)
+    path = new_project("t", "qgs")
+    a, b = layer("A", 0), layer("B", 0)
+    proj.write(path)
+    write_v2(
+        path + ".mldata", [(a, [(1, text("x")), (2, lambda ds: write_user_type(ds, b"QgsSomethingElse"))]), (b, [])]
+    )
+    before = Path(path + ".mldata").read_bytes()
+    reopen(path)
+    assert plugin.load_failed
+    assert any("QgsSomethingElse" in t for _k, t in dialogs), dialogs
+    assert counts()["A"] == 1
+    proj.write(path)
+    assert Path(path + ".mldata").read_bytes() == before
+
+
+@test
+def refused_features_are_loaded_with_null_values_and_the_rest_follows():
+    Settings.set_mldata_embedded(False)
+    path = new_project("t", "qgs")
+    a, b = layer("A", 0), layer("B", 0)
+    proj.write(path)
+    # The memory provider refuses a text in an integer field, and drops the rest of the batch with it
+    rows_a = [(1, text("x")), ("not a number", text("y")), (3, text("z"))]
+    write_v2(path + ".mldata", [(a, rows_a), (b, [(4, text("w"))])])
+    before = Path(path + ".mldata").read_bytes()
+    reopen(path)
+    assert sorted((f["s"], f["a"] if f["a"] else None) for f in get("A").getFeatures()) == [
+        ("x", 1),
+        ("y", None),
+        ("z", 3),
+    ], [f.attributes() for f in get("A").getFeatures()]
+    assert counts()["B"] == 1
+    # A value is missing: the file must not be replaced without asking
+    assert plugin.load_failed
+    assert any("needed changes" in t for _k, t in dialogs), dialogs
+    proj.write(path)
+    assert Path(path + ".mldata").read_bytes() == before
+
+
+@test
+def refused_features_keep_their_ids_in_v3():
+    new_project("t")
+    a = layer("A", 0, "zzfield:string")
+    feats = []
+    for i in range(6):
+        f = QgsFeature(a.fields())
+        f.setAttributes([f"v{i + 1}"])
+        feats.append(f)
+    a.dataProvider().addFeatures(feats)
+    a.dataProvider().deleteFeatures([2, 4])
+    f = str(WORK / "refused.mldata")
+    with Writer(f, FORMAT_V3, 1) as w:
+        w.write_layers([a])
+    data = bytearray(Path(f).read_bytes())
+    # Declare the text field as an integer one: the provider refuses all its values
+    name = "zzfield".encode("utf-16-be")
+    at = data.find(name) + len(name)
+    assert data[at : at + 4] == int(QMetaType.Type.QString).to_bytes(4, "big")
+    data[at : at + 4] = int(QMetaType.Type.Int).to_bytes(4, "big")
+    Path(f).write_bytes(bytes(data))
+    target = QgsVectorLayer("Point?crs=EPSG:4326", "T", "memory")
+    try:
+        with Reader(f) as r:
+            r.read_layers({a.id(): target})
+        raise AssertionError("should have raised")
+    except MldataError as e:
+        assert "4 features needed changes" in str(e), e
+    assert sorted(x.id() for x in target.getFeatures()) == [1, 3, 5, 6]
+
+
+@test
+def unset_values_are_saved_as_null():
+    from qgis.core import QgsUnsetAttributeValue
+
+    for file_format in (FORMAT_AUTO, FORMAT_ALWAYS_V3):
+        Settings.set_file_format(file_format)
+        path = new_project("t")
+        a = layer("A", 0)
+        f = QgsFeature(a.fields())
+        f.setAttributes([5, QgsUnsetAttributeValue("'x'")])
+        if not a.dataProvider().addFeatures([f])[0]:
+            # QGIS 3.40 refuses them, so they cannot be in a layer there
+            assert Qgis.QGIS_VERSION_INT < 34400
+            return
+        layer("B", 3)
+        proj.write(path)
+        reopen(path)
+        assert not plugin.load_failed, dialogs
+        assert counts() == {"A": 1, "B": 3}, counts()
+        got = next(get("A").getFeatures())
+        assert got["a"] == 5 and not isinstance(got["s"], QgsUnsetAttributeValue) and not got["s"], got.attributes()
+
+
+@test
+def values_qt_cannot_store_are_never_written():
+    from qgis.core import QgsInterval, QgsUnsetAttributeValue
+
+    new_project("t")
+    a = layer("A", 0)
+    field = a.fields()[1]
+    for version in (FORMAT_V2, FORMAT_V3):
+        w = Writer(str(WORK / "unstreamable.mldata"), version, 1)
+        w.open()
+        try:
+            assert w.streamable(QgsUnsetAttributeValue(), a, field) is None
+            assert w.streamable([1, QgsUnsetAttributeValue()], a, field) == [1, None]
+            assert w.streamable({"k": QgsUnsetAttributeValue()}, a, field) == {"k": None}
+            for value in (QgsInterval(60), [QgsInterval(60)]):
+                try:
+                    w.streamable(value, a, field)
+                    raise AssertionError("should have raised")
+                except OSError as e:
+                    assert "QgsInterval" in str(e) and "Layer A, field s" in str(e), e
+        finally:
+            w.close()
+
+
 @test
 def v2_format_bytes_are_unchanged_in_structure():
     """A plain layer must stay in v2 so that older plugin versions can open the project"""
@@ -1244,7 +1450,9 @@ def export_keeps_empty_fid_values():
 @test
 def export_handles_other_awkward_field_names():
     new_project("t")
-    fields = "fid:integer&field=gpkg_fid:integer&field=geom:string&field=geometry:string&field=abc:string&field=ABC:string"
+    fields = (
+        "fid:integer&field=gpkg_fid:integer&field=geom:string&field=geometry:string&field=abc:string&field=ABC:string"
+    )
     lyr = layer("W", 2, fields)
     lyr.dataProvider().changeAttributeValues(
         {f.id(): {1: 7, 2: "g", 3: "h", 4: "low", 5: "up"} for f in lyr.getFeatures()}
@@ -1297,7 +1505,9 @@ def failed_export_leaves_nothing_and_never_switches():
             return result
 
     original = layer_tools.QgsVectorFileWriter
-    Writer_ = type("W", (), {k: getattr(original, k) for k in ("SaveVectorOptions", "ActionOnExistingFile", "WriterError")})
+    Writer_ = type(
+        "W", (), {k: getattr(original, k) for k in ("SaveVectorOptions", "ActionOnExistingFile", "WriterError")}
+    )
     Writer_.writeAsVectorFormatV3 = Failing.writeAsVectorFormatV3
     layer_tools.QgsVectorFileWriter = Writer_
     try:

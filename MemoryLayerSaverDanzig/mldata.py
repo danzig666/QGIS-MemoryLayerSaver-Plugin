@@ -26,6 +26,29 @@ INT16_MIN = -32768
 INT16_MAX = 32767
 
 
+# Qt writes the values it has no stream operator for without any error, as their type id and type
+# name only: nothing can read them back. These were checked to have none in QGIS 3.40 to 4.2, so their
+# values are read as NULL. QgsUnsetAttributeValue (a default value not resolved yet) ends up in the
+# attributes of some features. Geometries are not in the list: they have an operator in Qt 6 builds.
+EMPTY_USER_TYPES = (
+    b"QgsUnsetAttributeValue",
+    b"QgsInterval",
+    b"QgsCoordinateReferenceSystem",
+    b"QgsPointXY",
+)
+# The type ids which announce a user type, followed by its name: Qt 4 streams, then Qt 5 streams
+STREAM_USER_TYPE_IDS = (127, 1024)
+# Containers, whose items are read one by one when one of them cannot be read
+STREAM_TYPE_MAP = 8
+STREAM_TYPE_LIST = 9
+STREAM_TYPE_HASH = 28
+
+try:
+    from qgis.core import QgsUnsetAttributeValue
+except ImportError:  # QGIS < 3.28
+    QgsUnsetAttributeValue = None
+
+
 class MldataError(ValueError):
     """An mldata file cannot be read, or not entirely"""
 
@@ -48,6 +71,10 @@ def needs_v3(layer):
         if not (fits_int16(field.length()) and fits_int16(field.precision()) and fits_int16(field.type())):
             return True
     return False
+
+
+def is_unset_value(value):
+    return QgsUnsetAttributeValue is not None and isinstance(value, QgsUnsetAttributeValue)
 
 
 def encode_geometry_value(value):

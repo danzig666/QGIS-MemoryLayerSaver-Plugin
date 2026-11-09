@@ -4,10 +4,12 @@ from qgis.core import Qgis, QgsFeature, QgsFeatureSink, QgsField, QgsGeometry, Q
 from qgis.PyQt.QtCore import QDataStream, QFile, QIODevice, QMetaType
 
 from .mldata import (
+    EMPTY_USER_TYPES,
     FORMAT_V3,
     MAGIC,
     NATIVE_SUBTYPES,
     READABLE_FORMATS,
+    STREAM_USER_TYPE_IDS,
     STREAM_VERSION_LEGACY,
     STREAM_VERSION_V3,
     MldataError,
@@ -235,7 +237,10 @@ class Reader:
                 self.check_status("features")
                 return
             fid = ds.readInt64() if v3 else None
+            values_start = self._file.pos()
             values = [read_variant() for _i in attr]
+            if ds.status() != ok:
+                values = self.read_values_one_by_one(values_start, len(fields))
             wkb_size = ds.readUInt32()
             if wkb_size > self._size:
                 raise MldataError(f"{self._filename} is truncated or corrupt (geometry size)")
@@ -245,6 +250,32 @@ class Reader:
             for i in geometry_fields:
                 values[i] = decode_geometry_value(values[i])
             yield fid, values, wkb
+
+    def read_values_one_by_one(self, start, count):
+        """The slow way to read the attributes of a feature, for when Qt cannot read one of them.
+
+        Values of some user types were written without any content (see EMPTY_USER_TYPES): Qt
+        reads their type and refuses them, they are read as NULL here. Anything else is an error."""
+        ds = self._dstream
+        self._file.seek(start)
+        ds.resetStatus()
+        values = []
+        for _i in range(count):
+            position = self._file.pos()
+            type_id = ds.readUInt32()
+            ds.readInt8()  # is null
+            if type_id in STREAM_USER_TYPE_IDS:
+                name = bytes(ds.readBytes() or b"").rstrip(b"\0")
+                if name in EMPTY_USER_TYPES:
+                    self.check_status("features")
+                    values.append(None)
+                    continue
+                self.check_status("features")
+                raise MldataError(f"{self._filename}: values of type {name.decode(errors='replace')} cannot be read")
+            self._file.seek(position)
+            values.append(ds.readQVariant())
+            self.check_status("features")
+        return values
 
     def read_layer(self, layer):
         log("Reading layer " + layer.id())

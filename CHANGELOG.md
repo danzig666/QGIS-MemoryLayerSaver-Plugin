@@ -3,6 +3,11 @@
 This is the changelog of a fork of [Memory Layer Saver](https://github.com/YoannQDQ/qgis-memory-layer-saver). Versions up to 6.0.1 are the original project,
 and all issue numbers below refer to its issue tracker.
 
+## [6.2.2] - 2026-11-09
+- Files holding unset attribute values (`QgsUnsetAttributeValue`, left by some edits) can be loaded again. Qt cannot
+  store these values, so the file only held their type: reading stopped there, and every layer after it in a v2 file
+  stayed empty. They are now read as NULL, and saved as NULL
+
 ## [6.2.1] - 2026-11-01
 GeoPackage export:
 - Layers with a field named `fid` now export whatever it holds: duplicates, empty values, text or decimals. It stays

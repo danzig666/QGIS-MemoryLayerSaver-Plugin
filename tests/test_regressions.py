@@ -916,6 +916,78 @@ def v1_file_is_still_readable():
     assert next(a.getFeatures()).geometry().asWkt() == "Point (3 4)"
 
 
+def write_v2_with_unset_values(f, first, second):
+    """A v2 file as written for a feature holding a QgsUnsetAttributeValue: Qt has no stream operator
+    for it, and writes the user type id and the type name without any content"""
+    qf = QFile(f)
+    qf.open(QIODevice.OpenModeFlag.WriteOnly)
+    ds = QDataStream(qf)
+    ds.setVersion(QDataStream.Version.Qt_4_5)
+    ds.writeRawData(b"QGis.MemoryLayerData")
+    ds.writeUInt32(2)
+    wkb = QgsGeometry.fromWkt("POINT(3 4)").asWkb()
+    for lyr, rows in ((first, [(1, "x"), (2, None), (3, "z")]), (second, [(4, "w")])):
+        ds.writeQString(lyr.id())
+        ds.writeQString("")
+        ds.writeInt16(2)
+        for name, qtype, typename in (("a", QMetaType.Type.Int, "integer"), ("s", QMetaType.Type.QString, "string")):
+            ds.writeQString(name)
+            ds.writeInt16(int(qtype))
+            ds.writeQString(typename)
+            ds.writeInt16(0)
+            ds.writeInt16(0)
+            ds.writeQString("")
+        for a, s in rows:
+            ds.writeBool(True)
+            ds.writeQVariant(a)
+            if s is None:
+                ds.writeUInt32(127)
+                ds.writeInt8(0)
+                ds.writeBytes(b"QgsUnsetAttributeValue\0")
+            else:
+                ds.writeQVariant(s)
+            ds.writeUInt32(len(wkb))
+            ds.writeRawData(wkb)
+        ds.writeBool(False)
+    qf.close()
+
+
+@test
+def unset_values_written_by_older_versions_are_read_as_null():
+    # A .qgs project with a separate .mldata file, as older versions stored it
+    Settings.set_mldata_embedded(False)
+    path = new_project("t", "qgs")
+    a, b = layer("A", 0), layer("B", 0)
+    proj.write(path)
+    write_v2_with_unset_values(path + ".mldata", a, b)
+    reopen(path)
+    assert not plugin.load_failed, dialogs
+    assert [(f["a"], f["s"]) for f in get("A").getFeatures()][0::2] == [(1, "x"), (3, "z")]
+    assert not next(f for f in get("A").getFeatures() if f["a"] == 2)["s"]
+    assert [(f["a"], f["s"]) for f in get("B").getFeatures()] == [(4, "w")]
+    assert scan_bytes(Path(path + ".mldata").read_bytes())[1:] == ({"A": 3, "B": 1}, [])
+
+
+@test
+def unset_values_are_saved_as_null():
+    from qgis.core import QgsUnsetAttributeValue
+
+    for file_format in (FORMAT_AUTO, FORMAT_ALWAYS_V3):
+        Settings.set_file_format(file_format)
+        path = new_project("t")
+        a = layer("A", 0)
+        f = QgsFeature(a.fields())
+        f.setAttributes([5, QgsUnsetAttributeValue("'x'")])
+        a.dataProvider().addFeatures([f])
+        layer("B", 3)
+        proj.write(path)
+        reopen(path)
+        assert not plugin.load_failed, dialogs
+        assert counts() == {"A": 1, "B": 3}, counts()
+        got = next(get("A").getFeatures())
+        assert got["a"] == 5 and not isinstance(got["s"], QgsUnsetAttributeValue) and not got["s"], got.attributes()
+
+
 @test
 def v2_format_bytes_are_unchanged_in_structure():
     """A plain layer must stay in v2 so that older plugin versions can open the project"""

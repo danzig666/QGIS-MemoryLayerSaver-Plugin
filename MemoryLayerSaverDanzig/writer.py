@@ -10,6 +10,7 @@ from .mldata import (
     STREAM_VERSION_V3,
     encode_geometry_value,
     is_geometry_field,
+    is_unset_value,
 )
 from .toolbox import log, log_warning, plugin_version, unfiltered_provider
 
@@ -139,7 +140,8 @@ class Writer:
                 ds.writeBool(True)
                 if v3:
                     ds.writeInt64(feat.id())
-                values = feat.attributes()
+                # Qt cannot stream unset values: it writes their type only, which nothing can read back
+                values = [None if is_unset_value(value) else value for value in feat.attributes()]
                 for i, encode in encoded:
                     values[i] = encode(values[i])
                 for value in values:

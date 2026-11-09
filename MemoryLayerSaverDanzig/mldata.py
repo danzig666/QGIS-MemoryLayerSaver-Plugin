@@ -26,6 +26,18 @@ INT16_MIN = -32768
 INT16_MAX = 32767
 
 
+# Values of these user types were written without any content, as Qt has no stream operator for them.
+# QgsUnsetAttributeValue (a default value not resolved yet) ends up in the attributes of some features.
+EMPTY_USER_TYPES = (b"QgsUnsetAttributeValue",)
+# The type ids which announce a user type, followed by its name: Qt 4 streams, then Qt 5 streams
+STREAM_USER_TYPE_IDS = (127, 1024)
+
+try:
+    from qgis.core import QgsUnsetAttributeValue
+except ImportError:  # QGIS < 3.28
+    QgsUnsetAttributeValue = None
+
+
 class MldataError(ValueError):
     """An mldata file cannot be read, or not entirely"""
 
@@ -48,6 +60,10 @@ def needs_v3(layer):
         if not (fits_int16(field.length()) and fits_int16(field.precision()) and fits_int16(field.type())):
             return True
     return False
+
+
+def is_unset_value(value):
+    return QgsUnsetAttributeValue is not None and isinstance(value, QgsUnsetAttributeValue)
 
 
 def encode_geometry_value(value):

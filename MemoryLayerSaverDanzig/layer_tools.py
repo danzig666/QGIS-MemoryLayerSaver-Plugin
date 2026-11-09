@@ -12,12 +12,15 @@ from qgis.core import (
     QgsProviderRegistry,
     QgsVectorFileWriter,
     QgsVectorLayer,
+    QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import QFile, Qt
+from qgis.PyQt.QtGui import QGuiApplication
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
+    QHeaderView,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -283,6 +286,113 @@ def restore_layers(path, infos):
     return added
 
 
+def fit_to_screen(dialog, width, height):
+    """Never larger than 80% of the screen the dialog is on: what does not fit scrolls"""
+    screen = dialog.screen() if hasattr(dialog, "screen") else None
+    screen = screen or QGuiApplication.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        width = min(width, int(available.width() * 0.8))
+        height = min(height, int(available.height() * 0.8))
+    dialog.resize(width, height)
+
+
+def layer_group_path(layer):
+    node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+    names = []
+    parent = node.parent() if node else None
+    while parent is not None and parent.parent() is not None:
+        names.append(parent.name())
+        parent = parent.parent()
+    return " / ".join(reversed(names))
+
+
+def human_size(size):
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+        size /= 1024
+    return ""
+
+
+class SortableItem(QTableWidgetItem):
+    """Sorted by a value of its own, such as a number shown as text"""
+
+    def __init__(self, text, key):
+        super().__init__(text)
+        self.key = key
+
+    def __lt__(self, other):
+        if isinstance(other, SortableItem):
+            return self.key < other.key
+        return super().__lt__(other)
+
+
+class LayerInfoDialog(QDialog):
+    """The memory layers saved with the project, in a table which scrolls instead of outgrowing the screen.
+
+    sizes gives the bytes each layer takes in the project, None when it cannot be told."""
+
+    COLUMNS = ("Layer", "Features", "Size", "Fields", "Geometry", "Group")
+
+    def __init__(self, layers, sizes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Memory Layer Saver")
+        layout = QVBoxLayout(self)
+        total = sum(layer.featureCount() for layer in layers)
+        known = [size for size in sizes if size is not None]
+        layout.addWidget(
+            QLabel(
+                self.tr("{0} memory layers, {1} features, about {2}, will be saved with this project:").format(
+                    len(layers), total, human_size(sum(known))
+                ),
+                self,
+            )
+        )
+        self.table = QTableWidget(len(layers), len(self.COLUMNS), self)
+        self.table.setHorizontalHeaderLabels([self.tr(c) for c in self.COLUMNS])
+        self.table.horizontalHeaderItem(2).setToolTip(
+            self.tr("What the layer adds to the saved project. Layers take more memory than this while QGIS runs.")
+        )
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        for row, (layer, size) in enumerate(zip(layers, sizes)):
+            name = SortableItem(layer.name(), layer.name().casefold())
+            # Several layers can have the same name
+            name.setToolTip(layer.id())
+            group = layer_group_path(layer)
+            items = (
+                name,
+                SortableItem(str(layer.featureCount()), layer.featureCount()),
+                SortableItem(human_size(size) if size is not None else "?", size if size is not None else -1),
+                SortableItem(str(len(layer.fields())), len(layer.fields())),
+                SortableItem(QgsWkbTypes.displayString(layer.wkbType()) or "NoGeometry", int(layer.wkbType())),
+                SortableItem(group, group.casefold()),
+            )
+            for column, item in enumerate(items):
+                if column in (1, 2, 3):
+                    item.setTextAlignment(right)
+                self.table.setItem(row, column, item)
+        self.table.resizeColumnsToContents()
+        header = self.table.horizontalHeader()
+        for column in (0, 5):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+            header.resizeSection(column, min(header.sectionSize(column), 300))
+        header.setStretchLastSection(True)
+        self.table.setSortingEnabled(True)
+        layout.addWidget(self.table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        rows_height = sum(self.table.rowHeight(row) for row in range(len(layers)))
+        columns_width = sum(header.sectionSize(column) for column in range(len(self.COLUMNS)))
+        fit_to_screen(self, max(500, columns_width + 60), max(200, rows_height + 140))
+
+
 class RestoreDialog(QDialog):
     """Show the content of an mldata file and let the user choose the layers to restore"""
 
@@ -290,7 +400,7 @@ class RestoreDialog(QDialog):
         super().__init__(parent)
         self.infos = infos
         self.setWindowTitle(self.tr("Restore layers from file"))
-        self.resize(640, 360)
+        fit_to_screen(self, 640, 360)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(self.tr("{0} (format v{1})").format(path, reader_version), self))
@@ -320,7 +430,5 @@ class RestoreDialog(QDialog):
 
     def selected_infos(self):
         return [
-            info
-            for row, info in enumerate(self.infos)
-            if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+            info for row, info in enumerate(self.infos) if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
         ]

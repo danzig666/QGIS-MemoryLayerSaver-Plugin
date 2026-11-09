@@ -27,10 +27,11 @@ from qgis.PyQt.QtCore import (  # noqa: E402
     QIODevice,
     QMetaType,
     QSettings,
+    Qt,
     QTime,
     QTimeZone,
 )
-from qgis.PyQt.QtWidgets import QFileDialog, QMainWindow, QMenu, QMessageBox  # noqa: E402
+from qgis.PyQt.QtWidgets import QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox  # noqa: E402
 
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(WORK / "settings"))
@@ -1581,6 +1582,41 @@ def export_dialog_fits_the_screen_with_many_errors():
     # Pixels depend on the fonts of the platform: it is the content of the main text which has to stay small
     assert len(box.text().splitlines()) <= 10 and len(box.text()) < 1000, box.text()
 
+
+
+@test
+def layer_information_fits_the_screen_and_sorts_every_column():
+    new_project("t")
+    for i in range(300):
+        layer(f"Layer with a rather long name, as they often are in real projects {i % 7}", i % 5)
+    big = layer("Big", 2000)
+    dialog = plugin.info_dialog()
+    table = dialog.table
+    assert table.rowCount() == 301
+    available = dialog.screen().availableGeometry()
+    assert dialog.height() <= available.height() * 0.8 and dialog.width() <= available.width() * 0.8
+    assert "301 memory layers, 2600 features" in dialog.findChild(QLabel).text()
+
+    def column(index):
+        return [table.item(row, index).text() for row in range(table.rowCount())]
+
+    # Numbers sort as numbers, not as text
+    table.sortItems(1, Qt.SortOrder.DescendingOrder)
+    assert column(1)[:2] == ["2000", "4"], column(1)[:2]
+    # The size is the one the layer takes in the saved data
+    size = Writer.layer_size(big, FORMAT_V2)
+    with Writer(str(WORK / "size.mldata"), FORMAT_V2) as w:
+        w.write_layer(big)
+    assert size == Path(WORK / "size.mldata").stat().st_size - 24, size
+    table.sortItems(2, Qt.SortOrder.DescendingOrder)
+    assert table.item(0, 0).text() == "Big" and "KB" in table.item(0, 2).text(), column(2)[:2]
+    for index in range(table.columnCount()):
+        table.sortItems(index, Qt.SortOrder.AscendingOrder)
+    table.sortItems(0, Qt.SortOrder.AscendingOrder)
+    assert column(0)[0] == "Big", column(0)[:2]
+    dialog.deleteLater()
+    proj.clear()
+    assert plugin.info_dialog() is None
 
 def run_export(mode, target, answer_yes=False):
     """Go through the whole export of the plugin, with what the user would choose"""

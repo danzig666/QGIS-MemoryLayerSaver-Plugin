@@ -9,6 +9,9 @@ from .mldata import (
     MAGIC,
     NATIVE_SUBTYPES,
     READABLE_FORMATS,
+    STREAM_TYPE_HASH,
+    STREAM_TYPE_LIST,
+    STREAM_TYPE_MAP,
     STREAM_USER_TYPE_IDS,
     STREAM_VERSION_LEGACY,
     STREAM_VERSION_V3,
@@ -252,30 +255,42 @@ class Reader:
             yield fid, values, wkb
 
     def read_values_one_by_one(self, start, count):
-        """The slow way to read the attributes of a feature, for when Qt cannot read one of them.
-
-        Values of some user types were written without any content (see EMPTY_USER_TYPES): Qt
-        reads their type and refuses them, they are read as NULL here. Anything else is an error."""
-        ds = self._dstream
+        """The slow way to read the attributes of a feature, for when Qt cannot read one of them."""
         self._file.seek(start)
-        ds.resetStatus()
-        values = []
-        for _i in range(count):
-            position = self._file.pos()
-            type_id = ds.readUInt32()
-            ds.readInt8()  # is null
-            if type_id in STREAM_USER_TYPE_IDS:
-                name = bytes(ds.readBytes() or b"").rstrip(b"\0")
-                if name in EMPTY_USER_TYPES:
-                    self.check_status("features")
-                    values.append(None)
-                    continue
-                self.check_status("features")
-                raise MldataError(f"{self._filename}: values of type {name.decode(errors='replace')} cannot be read")
-            self._file.seek(position)
-            values.append(ds.readQVariant())
+        self._dstream.resetStatus()
+        return [self.read_value_slowly() for _i in range(count)]
+
+    def read_value_slowly(self):
+        """Values of some user types were written without any content (see EMPTY_USER_TYPES): Qt
+        reads their type and refuses them, they are read as NULL here, also inside lists and maps.
+        Anything else Qt cannot read is an error."""
+        ds = self._dstream
+        position = self._file.pos()
+        type_id = ds.readUInt32()
+        ds.readInt8()  # is null
+        self.check_status("features")
+        if type_id in STREAM_USER_TYPE_IDS:
+            name = bytes(ds.readBytes() or b"").rstrip(b"\0")
             self.check_status("features")
-        return values
+            if name in EMPTY_USER_TYPES:
+                return None
+            raise MldataError(f"{self._filename}: values of type {name.decode(errors='replace')} cannot be read")
+        if type_id in (STREAM_TYPE_LIST, STREAM_TYPE_MAP, STREAM_TYPE_HASH):
+            count = ds.readUInt32()
+            self.check_status("features")
+            if count > self._size:
+                raise MldataError(f"{self._filename} is truncated or corrupt (list size)")
+            if type_id == STREAM_TYPE_LIST:
+                return [self.read_value_slowly() for _i in range(count)]
+            result = {}
+            for _i in range(count):
+                key = ds.readQString()
+                result[key] = self.read_value_slowly()
+            return result
+        self._file.seek(position)
+        value = ds.readQVariant()
+        self.check_status("features")
+        return value
 
     def read_layer(self, layer):
         log("Reading layer " + layer.id())
@@ -286,20 +301,23 @@ class Reader:
         layer.updateFields()
         fields = dp.fields()
 
+        # Entries are (feature, is a placeholder)
         batch = []
-        placeholders = []
+        placeholder_ids = []
+        self._problems = []
+        pending = 0
         next_fid = 1
         try:
             for fid, values, wkb in self.read_features(fields):
                 # The memory provider numbers features by itself: placeholders fill the gaps in the ids
                 if fid is not None and next_fid is not None:
-                    if len(placeholders) + fid - next_fid > MAX_FID_PLACEHOLDERS:
+                    if pending + fid - next_fid > MAX_FID_PLACEHOLDERS:
                         log_warning(f"Layer {layer.name()}: feature ids are too sparse to be restored")
                         next_fid = None
                     else:
-                        for gap in range(next_fid, fid):
-                            placeholders.append(gap)
-                            batch.append(QgsFeature(fields))
+                        for _gap in range(next_fid, fid):
+                            pending += 1
+                            batch.append((QgsFeature(fields), True))
                         next_fid = fid + 1
                 feat = QgsFeature(fields)
                 feat.setAttributes(values)
@@ -307,25 +325,72 @@ class Reader:
                     geom = QgsGeometry()
                     geom.fromWkb(wkb)
                     feat.setGeometry(geom)
-                batch.append(feat)
+                batch.append((feat, False))
                 if len(batch) >= BATCH_SIZE:
-                    self.flush(dp, batch)
+                    placeholder_ids += self.flush(dp, batch, fields)
                     batch = []
         finally:
             # Whatever precedes an error is worth having
             if batch:
-                self.flush(dp, batch)
-            if placeholders:
-                dp.deleteFeatures(placeholders)
+                placeholder_ids += self.flush(dp, batch, fields)
+            if placeholder_ids:
+                dp.deleteFeatures(placeholder_ids)
             if not layer.setSubsetString(definition["subset"]):
                 log_warning(f"Cannot restore the filter of layer {layer.name()}: {definition['subset']}")
             layer.updateFields()
             layer.updateExtents()
+            if self._problems:
+                # Not an error of the stream: the next layers are still read, and the load is reported as failed
+                shown = "; ".join(self._problems[:5])
+                more = f" (and {len(self._problems) - 5} more)" if len(self._problems) > 5 else ""
+                self.errors.append(
+                    (layer.id(), f"{len(self._problems)} features needed changes to load: {shown}{more}")
+                )
+                log_warning(f"Layer {layer.name()}: {self.errors[-1][1]}")
+
+    def flush(self, dp, batch, fields):
+        """Add a batch of features, and return the ids the placeholders got.
+
+        When the provider refuses a feature, it keeps those before it and drops the others without
+        numbering them: they are added again one by one, the refused ones with their incompatible
+        values made NULL, as losing a value is better than losing the feature."""
+        before = dp.featureCount()
+        ok, added = dp.addFeatures([feat for feat, _placeholder in batch], QgsFeatureSink.Flag.FastInsert)
+        if ok:
+            return [feat.id() for feat, (_f, placeholder) in zip(added, batch) if placeholder]
+        kept = dp.featureCount() - before
+        if not 0 <= kept <= len(batch):
+            raise MldataError(f"Some features were refused by the memory provider: {dp.lastError()}")
+        ids = [feat.id() for feat, (_f, placeholder) in zip(added[:kept], batch[:kept]) if placeholder]
+        for feat, placeholder in batch[kept:]:
+            ok, added = dp.addFeatures([feat], QgsFeatureSink.Flag.FastInsert)
+            if not ok:
+                error = dp.lastError()
+                feat = self.compatible_feature(feat, fields)
+                ok, added = dp.addFeatures([feat], QgsFeatureSink.Flag.FastInsert)
+                if not ok:
+                    feat.setAttributes([None] * len(fields))
+                    ok, added = dp.addFeatures([feat], QgsFeatureSink.Flag.FastInsert)
+                    error += " (all its values were dropped)"
+                self._problems.append(error)
+                if not ok:
+                    raise MldataError(f"A feature was refused by the memory provider: {dp.lastError()}")
+            if placeholder:
+                ids.append(added[0].id())
+        return ids
 
     @staticmethod
-    def flush(dp, batch):
-        if not dp.addFeatures(batch, QgsFeatureSink.Flag.FastInsert)[0]:
-            raise MldataError(f"Some features were refused by the memory provider: {dp.lastError()}")
+    def compatible_feature(feat, fields):
+        values = []
+        for field, value in zip(fields, feat.attributes()):
+            try:
+                converted = field.convertCompatible(value)
+            except (TypeError, ValueError):
+                converted = None
+            values.append(converted)
+        result = QgsFeature(feat)
+        result.setAttributes(values)
+        return result
 
     def skip_layer(self):
         # In v3, for_each_layer goes straight to the end of the layer

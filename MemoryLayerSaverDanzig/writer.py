@@ -1,4 +1,4 @@
-from qgis.PyQt.QtCore import QDataStream, QIODevice, QMetaType, QSaveFile
+from qgis.PyQt.QtCore import QBuffer, QByteArray, QDataStream, QDate, QDateTime, QIODevice, QMetaType, QSaveFile, QTime
 
 from .mldata import (
     FORMAT_V2,
@@ -14,6 +14,14 @@ from .mldata import (
 )
 from .toolbox import log, log_warning, plugin_version, unfiltered_provider
 
+# Values of these types are always streamed with their content
+SAFE_TYPES = frozenset((int, float, str, bool, bytes, type(None), QDate, QTime, QDateTime, QByteArray))
+STREAM_CHECK_MARKER = 0x4D4C5344
+
+
+class UnstreamableValueError(OSError):
+    """A value Qt would write without its content, so that nothing could read the file back"""
+
 
 class Writer:
     """Write the committed data of memory layers. The target is only replaced by commit()."""
@@ -25,6 +33,7 @@ class Writer:
         self._progress = progress
         self._file = None
         self._dstream = None
+        self._streamable = {}
 
     def __enter__(self):
         self.open()
@@ -130,7 +139,9 @@ class Writer:
         if v3:
             encoded = [(i, encode_geometry_value) for i, field in enumerate(fields) if is_geometry_field(field)]
         else:
-            encoded = [(i, self.datetime_v2) for i, field in enumerate(fields) if field.type() == QMetaType.Type.QDateTime]
+            encoded = [
+                (i, self.datetime_v2) for i, field in enumerate(fields) if field.type() == QMetaType.Type.QDateTime
+            ]
 
         progress = self._progress
         written = 0
@@ -140,11 +151,12 @@ class Writer:
                 ds.writeBool(True)
                 if v3:
                     ds.writeInt64(feat.id())
-                # Qt cannot stream unset values: it writes their type only, which nothing can read back
-                values = [None if is_unset_value(value) else value for value in feat.attributes()]
+                values = feat.attributes()
                 for i, encode in encoded:
                     values[i] = encode(values[i])
-                for value in values:
+                for i, value in enumerate(values):
+                    if type(value) not in SAFE_TYPES:
+                        value = self.streamable(value, layer, fields[i])
                     ds.writeQVariant(value)
                 geom = feat.geometry()
                 if not geom:
@@ -159,6 +171,44 @@ class Writer:
         if progress:
             progress.advance(written % 1000)
         ds.writeBool(False)
+
+    def streamable(self, value, layer, field):
+        """Qt writes the values it has no stream operator for without reporting any error, as their
+        type only, and nothing can read the file back from there: such values must never be written.
+        Unset values become NULL, as they are for the provider. Anything else stops the save."""
+        if is_unset_value(value):
+            return None
+        if isinstance(value, list):
+            return [v if type(v) in SAFE_TYPES else self.streamable(v, layer, field) for v in value]
+        if isinstance(value, dict):
+            return {k: v if type(v) in SAFE_TYPES else self.streamable(v, layer, field) for k, v in value.items()}
+        key = (type(value), value.userType() if hasattr(value, "userType") else None)
+        if key not in self._streamable:
+            self._streamable[key] = self.can_stream(value)
+        if not self._streamable[key]:
+            type_name = value.typeName() if hasattr(value, "typeName") else type(value).__name__
+            raise UnstreamableValueError(
+                f"Layer {layer.name()}, field {field.name()}: values of type {type_name} cannot be saved. "
+                "The previous data is kept. Change these values, or make the layer permanent."
+            )
+        return value
+
+    def can_stream(self, value):
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        out = QDataStream(buffer)
+        out.setVersion(self._dstream.version())
+        out.writeQVariant(value)
+        out.writeUInt32(STREAM_CHECK_MARKER)
+        buffer.close()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        back = QDataStream(buffer)
+        back.setVersion(out.version())
+        back.readQVariant()
+        marker = back.readUInt32()
+        return back.status() == QDataStream.Status.Ok and marker == STREAM_CHECK_MARKER
 
     @staticmethod
     def datetime_v2(value):

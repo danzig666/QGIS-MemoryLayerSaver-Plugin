@@ -4,9 +4,17 @@ This is the changelog of a fork of [Memory Layer Saver](https://github.com/Yoann
 and all issue numbers below refer to its issue tracker.
 
 ## [6.2.2] - 2026-11-09
-- Files holding unset attribute values (`QgsUnsetAttributeValue`, left by some edits) can be loaded again. Qt cannot
-  store these values, so the file only held their type: reading stopped there, and every layer after it in a v2 file
-  stayed empty. They are now read as NULL, and saved as NULL
+Data safety:
+- Files holding values Qt cannot store can be loaded again. Qt writes such values without any error, as their type
+  only: reading stopped there, and in a v2 file every layer after it stayed empty. Unset attribute values
+  (`QgsUnsetAttributeValue`, left by some edits), intervals, CRSs and points are now read as NULL, also inside lists
+- Such values are never written again: unset values are saved as NULL, and any other value Qt cannot store stops
+  the save with the layer and field named, keeping the previous data
+- A feature the memory provider refuses while loading no longer loses the features after it: they are all loaded,
+  the refused one with its incompatible values left NULL. The load is reported as failed, so the file is not
+  replaced without asking. The ids of the other features are kept in v3 files
+
+Releases are now published automatically, after the tests pass, when a new version reaches the master branch.
 
 ## [6.2.1] - 2026-11-01
 GeoPackage export:

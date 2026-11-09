@@ -26,11 +26,22 @@ INT16_MIN = -32768
 INT16_MAX = 32767
 
 
-# Values of these user types were written without any content, as Qt has no stream operator for them.
-# QgsUnsetAttributeValue (a default value not resolved yet) ends up in the attributes of some features.
-EMPTY_USER_TYPES = (b"QgsUnsetAttributeValue",)
+# Qt writes the values it has no stream operator for without any error, as their type id and type
+# name only: nothing can read them back. These were checked to have none in QGIS 3.40 to 4.2, so their
+# values are read as NULL. QgsUnsetAttributeValue (a default value not resolved yet) ends up in the
+# attributes of some features. Geometries are not in the list: they have an operator in Qt 6 builds.
+EMPTY_USER_TYPES = (
+    b"QgsUnsetAttributeValue",
+    b"QgsInterval",
+    b"QgsCoordinateReferenceSystem",
+    b"QgsPointXY",
+)
 # The type ids which announce a user type, followed by its name: Qt 4 streams, then Qt 5 streams
 STREAM_USER_TYPE_IDS = (127, 1024)
+# Containers, whose items are read one by one when one of them cannot be read
+STREAM_TYPE_MAP = 8
+STREAM_TYPE_LIST = 9
+STREAM_TYPE_HASH = 28
 
 try:
     from qgis.core import QgsUnsetAttributeValue
